@@ -31,14 +31,14 @@ ADMIN_ID = 5605925198
 ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
 BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
 
-# 🐘 SUPABASE POSTGRESQL DATABASE URL (Password Encoded)
+# 🐘 SUPABASE POSTGRESQL DATABASE URL
 DATABASE_URL = "postgresql://postgres:WQsa9069%23%2A6T9@db.ekoboehpqbiejiqfuuqa.supabase.co:5432/postgres"
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 # ==========================================
-# 🧹 STRICT UI TRACKER (Message Management)
+# 🧹 STRICT UI TRACKER
 # ==========================================
 chat_history = {}
 active_mail_messages = {}
@@ -66,7 +66,7 @@ def safe_delete(chat_id, message_id):
 # ==========================================
 app = Flask(__name__)
 
-# 👇 আপনার Vercel প্রজেক্টের লিংক এখানে বসানো হয়েছে 👇
+# 👇 Vercel Project URL 👇
 VERCEL_URL = "https://6t9.vercel.app/"
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
@@ -78,6 +78,12 @@ def getMessage():
 
 @app.route("/")
 def webhook():
+    # 🚀 Database setup moved here to prevent Vercel boot crash!
+    try:
+        init_db()
+    except Exception as e:
+        return f"<h1>Database Connection Error!</h1><p>{e}</p><br>Check if your Supabase details are correct.", 500
+        
     bot.remove_webhook()
     bot.set_webhook(url=VERCEL_URL + BOT_TOKEN)
     return "Webhook Set Perfectly! Premium Version V4.0 (Supabase PostgreSQL Enabled)", 200
@@ -98,15 +104,13 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY)''')
     
     try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
-    except psycopg2.Error: pass # Ignore if column already exists
+    except psycopg2.Error: pass
     
     try: cursor.execute("DELETE FROM banned_users WHERE user_id=%s", (ADMIN_ID,))
     except psycopg2.Error: pass
     
     cursor.close()
     conn.close()
-
-init_db()
 
 def save_user_info(user_id, username):
     with get_db_connection() as conn:
@@ -159,24 +163,6 @@ def verify_yshshop_api(api_key):
         if "balance" in bal_resp: return True
     except: pass
     return False
-
-# ==========================================
-# ⏱️ BACKGROUND TASKS
-# ==========================================
-def auto_cleanup_task():
-    while True:
-        try:
-            time.sleep(600)
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("DELETE FROM users")
-                    cursor.execute("DELETE FROM email_cache")
-                conn.commit()
-                
-            for chat_id, msgs in list(chat_history.items()):
-                for m_id in msgs: safe_delete(chat_id, m_id)
-                chat_history[chat_id] = []
-        except Exception: pass
 
 # ==========================================
 # 🛠️ CORE LOGIC & PARSERS
