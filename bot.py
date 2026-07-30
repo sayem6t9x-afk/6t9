@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from flask import Flask
+import json
 
 # ==========================================
 # ⚙️ CONFIGURATIONS & LOGGING
@@ -229,6 +230,38 @@ def detect_facebook_otp(subject, content):
         if code_match:
             return code_match.group(0)
     return None
+
+def parse_stock(resp):
+    try:
+        if isinstance(resp, (int, float)):
+            return str(int(resp))
+        if isinstance(resp, str):
+            if resp.isdigit():
+                return resp
+            try:
+                resp = json.loads(resp)
+            except:
+                pass
+        if isinstance(resp, dict):
+            for key in ["stock", "count", "data", "available", "total", "hotmail", "outlook"]:
+                if key in resp:
+                    val = resp[key]
+                    if isinstance(val, int):
+                        return str(val)
+                    if isinstance(val, dict):
+                        for subk in ["stock", "count", "available", "total"]:
+                            if subk in val and isinstance(val[subk], int):
+                                return str(val[subk])
+                    if str(val).isdigit():
+                        return str(val)
+            for v in resp.values():
+                if isinstance(v, int):
+                    return str(v)
+                if str(v).isdigit():
+                    return str(v)
+        return str(resp)
+    except:
+        return "0"
 
 import hmac
 import base64
@@ -629,27 +662,27 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
             
             # Gmail stock check
+            gmail_stock = "0"
             try:
-                stock_resp = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10).json()
-                gmail_stock = stock_resp.get("stock", stock_resp.get("count", stock_resp.get("data", "0"))) if isinstance(stock_resp, dict) else str(stock_resp)
+                r = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10)
+                try: gmail_stock = parse_stock(r.json())
+                except: gmail_stock = parse_stock(r.text.strip())
             except: gmail_stock = "0"
 
-            # Hotmail Trust stock check (Dedicated Endpoint)
+            # Hotmail Trust stock check
             hotmail_stock = "0"
             try:
-                hm_resp = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10).json()
-                if isinstance(hm_resp, dict):
-                    hotmail_stock = hm_resp.get("stock", hm_resp.get("count", hm_resp.get("data", hm_resp.get("hotmail", "0"))))
-                else: hotmail_stock = str(hm_resp)
+                r = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10)
+                try: hotmail_stock = parse_stock(r.json())
+                except: hotmail_stock = parse_stock(r.text.strip())
             except: hotmail_stock = "0"
 
-            # Outlook Trust stock check (Dedicated Endpoint)
+            # Outlook Trust stock check
             outlook_stock = "0"
             try:
-                out_resp = requests.get("https://outlook.yshshopmails.com/v1/api/stock", timeout=10).json()
-                if isinstance(out_resp, dict):
-                    outlook_stock = out_resp.get("stock", out_resp.get("count", out_resp.get("data", out_resp.get("outlook", "0"))))
-                else: outlook_stock = str(out_resp)
+                r = requests.get("https://outlook.yshshopmails.com/v1/api/stock", timeout=10)
+                try: outlook_stock = parse_stock(r.json())
+                except: outlook_stock = parse_stock(r.text.strip())
             except: outlook_stock = "0"
 
             balance = "⚠️ API Key not set"
@@ -786,7 +819,6 @@ def handle_query(call):
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail Trust**", parse_mode="Markdown")
-            # Dedicated Hotmail Trust Buy API
             url = f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}"
             try:
                 raw_resp = requests.get(url, timeout=10)
@@ -824,7 +856,6 @@ def handle_query(call):
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Outlook Trust**", parse_mode="Markdown")
-            # Dedicated Outlook Trust Buy API
             url = f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}"
             try:
                 raw_resp = requests.get(url, timeout=10)
