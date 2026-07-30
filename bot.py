@@ -76,12 +76,17 @@ def init_db():
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, email TEXT, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS email_cache (user_id BIGINT, idx INTEGER, subject TEXT, sender TEXT, full_content TEXT, PRIMARY KEY (user_id, idx))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, auto_delete INTEGER DEFAULT 1, username TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, username TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS bulk_accounts (id SERIAL, owner_id BIGINT, email TEXT PRIMARY KEY, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id BIGINT, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)''')
+    
+    cursor.execute("INSERT INTO bot_settings (key, value) VALUES ('global_auto_delete', '1') ON CONFLICT (key) DO NOTHING")
     
     try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
+    except psycopg2.Error: pass
+    try: cursor.execute("ALTER TABLE user_settings ADD COLUMN base_email TEXT")
     except psycopg2.Error: pass
     
     try: cursor.execute("DELETE FROM banned_users WHERE user_id=%s", (ADMIN_ID,))
@@ -90,12 +95,28 @@ def init_db():
     cursor.close()
     conn.close()
 
+def get_global_auto_delete():
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT value FROM bot_settings WHERE key='global_auto_delete'")
+            row = cursor.fetchone()
+            return row[0] == '1' if row else True
+
+def toggle_global_auto_delete():
+    current = get_global_auto_delete()
+    new_val = '0' if current else '1'
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO bot_settings (key, value) VALUES ('global_auto_delete', %s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (new_val,))
+        conn.commit()
+    return new_val == '1'
+
 def save_user_info(user_id, username):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
             if not cursor.fetchone():
-                cursor.execute("INSERT INTO user_settings (user_id, auto_delete) VALUES (%s, 1)", (user_id,))
+                cursor.execute("INSERT INTO user_settings (user_id) VALUES (%s)", (user_id,))
             if username:
                 cursor.execute("UPDATE user_settings SET username=%s WHERE user_id=%s", (username.lower(), user_id))
         conn.commit()
@@ -110,29 +131,26 @@ def is_user_banned(user_id):
 def get_user_settings(user_id):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT api_key, auto_delete FROM user_settings WHERE user_id=%s", (user_id,))
+            cursor.execute("SELECT api_key, base_email FROM user_settings WHERE user_id=%s", (user_id,))
             row = cursor.fetchone()
-            if row: return {"api_key": row[0], "auto_delete": bool(row[1])}
-            return {"api_key": None, "auto_delete": True}
+            if row: return {"api_key": row[0], "base_email": row[1]}
+            return {"api_key": None, "base_email": None}
 
 def set_user_api_key(user_id, api_key):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
             if cursor.fetchone(): cursor.execute("UPDATE user_settings SET api_key=%s WHERE user_id=%s", (api_key, user_id))
-            else: cursor.execute("INSERT INTO user_settings (user_id, api_key, auto_delete) VALUES (%s, %s, 1)", (user_id, api_key))
+            else: cursor.execute("INSERT INTO user_settings (user_id, api_key) VALUES (%s, %s)", (user_id, api_key))
         conn.commit()
 
-def toggle_auto_delete(user_id):
-    settings = get_user_settings(user_id)
-    new_val = 0 if settings["auto_delete"] else 1
+def set_user_base_email(user_id, base_email):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
-            if cursor.fetchone(): cursor.execute("UPDATE user_settings SET auto_delete=%s WHERE user_id=%s", (new_val, user_id))
-            else: cursor.execute("INSERT INTO user_settings (user_id, auto_delete) VALUES (%s, %s)", (user_id, new_val))
+            if cursor.fetchone(): cursor.execute("UPDATE user_settings SET base_email=%s WHERE user_id=%s", (base_email, user_id))
+            else: cursor.execute("INSERT INTO user_settings (user_id, base_email) VALUES (%s, %s)", (user_id, base_email))
         conn.commit()
-    return bool(new_val)
 
 def verify_yshshop_api(api_key):
     if len(api_key) < 20 or " " in api_key: return False
@@ -204,17 +222,17 @@ def send_welcome(message):
 
 def show_main_instruction(chat_id, message_id=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("🛒 Buy Gmail (yshshop)", callback_data="action_buy_gmail"), types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock"))
+    markup.add(types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"), types.InlineKeyboardButton("🔥 Buy Hotmail", callback_data="action_buy_hotmail_menu"))
+    markup.add(types.InlineKeyboardButton("🛠️ Zoho/Yandex Alias", callback_data="action_alias_maker"), types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock"))
     markup.add(types.InlineKeyboardButton("📁 My Bulk Accounts", callback_data="action_bulk_list"), types.InlineKeyboardButton("📜 Buy History", callback_data="action_buy_history"))
     markup.add(types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"), types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings"))
     if chat_id == ADMIN_ID: markup.add(types.InlineKeyboardButton("👨‍💻 Admin Panel (Boss Only)", callback_data="action_admin_panel"))
     
     instruction_text = (
-        "🤖 **Auto Secure FB Mail & OTP Reader Bot**\n\n"
+        "🤖 **Auto Secure Mail & OTP Reader Bot**\n\n"
         "**🔥 CLOUD SECURE BULK MODE ACTIVE!**\n"
         "1. Send a `.txt` file (It stays Private to you).\n"
-        "2. Click **📁 My Bulk Accounts** to pick an email.\n"
-        "*(Check Settings to toggle Auto-Delete feature!)*\n\n"
+        "2. Click **📁 My Bulk Accounts** to pick an email.\n\n"
         "**Manual Input Format:**\n"
         "🏢 **Zoho/Yandex:** `email|AppPassword`\n"
         "🔴 **Gmail:** `email@gmail.com|OrderID`\n"
@@ -251,6 +269,26 @@ def handle_query(call):
         show_main_instruction(chat_id, message_id=message_id)
         return
 
+    elif call.data == "action_alias_maker":
+        settings = get_user_settings(chat_id)
+        base_eml = settings["base_email"] or "Not Set"
+        alias_text = (
+            "🛠️ **Zoho & Yandex Alias Generator**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 **Your Base Email:** `{base_eml}`\n\n"
+            "Send a name (e.g., `sayem ahamed`), and I will generate formatted alias emails like:\n"
+            "`base+sayemahamed@zohomail.com`\n"
+            "`base+sayemahamed@yandex.com`\n\n"
+            "👇 **Send your name now or update your base email in Settings first!**"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email", callback_data="action_set_base_email"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=alias_text, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "action_set_base_email":
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your Base Email address** (e.g., `sayem@zohomail.com`):", parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_base_email_step, msg.message_id)
+
     elif call.data == "action_admin_panel":
         if chat_id != ADMIN_ID: return
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Loading Admin Stats from Cloud...**", parse_mode="Markdown")
@@ -262,21 +300,29 @@ def handle_query(call):
                     c.execute("SELECT COUNT(*) FROM banned_users")
                     banned_count = c.fetchone()[0]
                 
+            global_del = "🟢 ON" if get_global_auto_delete() else "🔴 OFF"
             stats_msg = (
                 "👨‍💻 **Secret Boss Dashboard (Cloud)**\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 f"👥 **Total Registered Users:** `{total_users}`\n"
                 f"🚫 **Total Banned Users:** `{banned_count}`\n"
+                f"🗑️ **Global Auto-Delete (All Users):** `{global_del}`\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ What would you like to do?"
             )
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(types.InlineKeyboardButton("👥 View All Users", callback_data="admin_view_users"))
             markup.add(types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"), types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user"))
+            markup.add(types.InlineKeyboardButton(f"Toggle Global Auto-Delete", callback_data="admin_toggle_autodel"))
             markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
+
+    elif call.data == "admin_toggle_autodel":
+        if chat_id != ADMIN_ID: return
+        toggle_global_auto_delete()
+        handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_admin_panel"))
 
     elif call.data == "admin_view_users":
         if chat_id != ADMIN_ID: return
@@ -311,24 +357,20 @@ def handle_query(call):
     elif call.data == "action_settings":
         settings = get_user_settings(chat_id)
         api_status = "✅ Set & Validated" if settings["api_key"] else "❌ Not Set"
-        del_status = "🟢 ON" if settings["auto_delete"] else "🔴 OFF"
+        base_status = f"`{settings['base_email']}`" if settings["base_email"] else "❌ Not Set"
         
         settings_text = (
             "⚙️ **Bot Preferences & Settings**\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
             f"🔑 **yshshopmails API Key:** {api_status}\n"
-            f"🗑️ **Auto-Delete (Bulk List):** {del_status}\n\n"
-            "*(If Auto-Delete is ON, bot automatically removes the account from your Bulk List once an OTP is successfully found.)*"
+            f"📧 **Base Email (Alias Maker):** {base_status}\n\n"
+            "*(Note: Auto-Delete feature is managed globally by the Admin for all users.)*"
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(types.InlineKeyboardButton("🔑 Update yshshopmails API Key", callback_data="action_set_api"))
-        markup.add(types.InlineKeyboardButton(f"Toggle Auto-Delete", callback_data="action_toggle_autodel"))
+        markup.add(types.InlineKeyboardButton("📧 Update Base Email for Aliases", callback_data="action_set_base_email"))
         markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=settings_text, parse_mode="Markdown", reply_markup=markup)
-
-    elif call.data == "action_toggle_autodel":
-        toggle_auto_delete(chat_id)
-        handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="action_settings"))
 
     elif call.data == "action_set_api":
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your valid 'yshshopmails' API Key now:**", parse_mode="Markdown")
@@ -342,7 +384,7 @@ def handle_query(call):
             
         if not rows: return bot.answer_callback_query(call.id, "⚠️ Your purchase history is empty.", show_alert=True)
             
-        history_text = "📜 **Your Last 15 Purchased Gmails (yshshopmails)**\n━━━━━━━━━━━━━━━━━━━\n\n"
+        history_text = "📜 **Your Last 15 Purchased Accounts**\n━━━━━━━━━━━━━━━━━━━\n\n"
         for idx, (eml, ord_id, date_str) in enumerate(rows, 1):
             history_text += f"**{idx}.** `{eml}|{ord_id}`\n"
         
@@ -410,12 +452,21 @@ def handle_query(call):
 
     elif call.data == "action_check_stock":
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching yshshopmails Live Data**", parse_mode="Markdown")
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
+            
+            # Gmail Stock
             try:
                 stock_resp = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10).json()
-                if isinstance(stock_resp, dict): stock_count = stock_resp.get("stock", stock_resp.get("count", stock_resp.get("data", "Available")))
-                else: stock_count = str(stock_resp)
-            except: stock_count = "Live"
+                if isinstance(stock_resp, dict): gmail_stock = stock_resp.get("stock", stock_resp.get("count", stock_resp.get("data", "Available")))
+                else: gmail_stock = str(stock_resp)
+            except: gmail_stock = "Live"
+
+            # Hotmail Stock
+            try:
+                hm_stock_resp = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10).json()
+                if isinstance(hm_stock_resp, dict): hotmail_stock = hm_stock_resp.get("stock", hm_stock_resp.get("count", hm_stock_resp.get("data", "Available")))
+                else: hotmail_stock = str(hm_stock_resp)
+            except: hotmail_stock = "Live"
 
             balance = "⚠️ API Key not set"
             api_key = get_user_settings(chat_id)["api_key"]
@@ -431,9 +482,18 @@ def handle_query(call):
                     cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s", (chat_id,))
                     local_stock = cursor.fetchone()[0]
 
-            dashboard_text = f"📊 **yshshopmails Server Dashboard**\n━━━━━━━━━━━━━━━━━━━\n📦 **FB Gmail Stock:** `{stock_count}` pcs\n💳 **Your Balance:** `{balance}`\n━━━━━━━━━━━━━━━━━━━\n📁 **Your Cloud TXT Stock:** `{local_stock}` accounts."
+            dashboard_text = (
+                "📊 **Server Stock Dashboard**\n"
+                "━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 **Gmail Stock:** `{gmail_stock}` pcs\n"
+                f"🔥 **Hotmail/Outlook Stock:** `{hotmail_stock}` pcs\n"
+                f"💳 **Your Balance:** `{balance}`\n"
+                "━━━━━━━━━━━━━━━━━━━\n"
+                f"📁 **Your Cloud TXT Stock:** `{local_stock}` accounts."
+            )
             markup = types.InlineKeyboardMarkup()
-            markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Now", callback_data="action_buy_gmail"))
+            markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"))
+            markup.row(types.InlineKeyboardButton("🔥 Buy Hotmail/Outlook", callback_data="action_buy_hotmail_menu"))
             markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=dashboard_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
@@ -441,25 +501,46 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Error:** {e}", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "action_buy_gmail":
-        if not get_user_settings(chat_id)["api_key"]: return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm Purchase", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (yshshopmails)**\n\nAre you sure you want to deduct balance from your account and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (Gmail)**\n\nAre you sure you want to deduct balance and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "action_buy_hotmail_menu":
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(types.InlineKeyboardButton("👤 Single Buy", callback_data="buy_hm_single"), types.InlineKeyboardButton("📦 Bulk Buy", callback_data="buy_hm_bulk"))
+        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Hotmail / Outlook Trust Purchase Mode**\n\nChoose how you want to buy:", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "buy_hm_single":
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_hotmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Single Checkout (Hotmail/Outlook)**\n\nAre you sure you want to buy 1 account?", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "buy_hm_bulk":
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **How many Hotmail accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, process_hotmail_bulk_step, msg.message_id)
 
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Calling yshshopmails API**", parse_mode="Markdown")
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Gmail**", parse_mode="Markdown")
             order_urls = [
                 f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
-                f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}",
-                f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}"
+                f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}"
             ]
             resp, raw_resp = None, None
             for url in order_urls:
                 try:
                     raw_resp = requests.get(url, timeout=10)
                     data = raw_resp.json()
-                    if isinstance(data, dict) and data.get("status") == "error" and data.get("message") == "error.notFound": continue
+                    if isinstance(data, dict) and data.get("status") == "error": continue
                     resp = data
                     break
                 except: continue
@@ -467,10 +548,10 @@ def handle_query(call):
             if not resp and raw_resp:
                 try: resp = raw_resp.json()
                 except: resp = {"mail": raw_resp.text.strip(), "order_id": "API_ORDER"}
-            elif not resp: resp = {"error": "All order endpoints returned notFound"}
+            elif not resp: resp = {"error": "Order failed"}
 
             eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            ord_id = resp.get("order_id") or resp.get("id") or resp.get("order") or "AUTO_ORDER"
+            ord_id = resp.get("order_id") or resp.get("id") or "AUTO_ORDER"
             
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
@@ -480,15 +561,67 @@ def handle_query(call):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, ord_id, 'gmail'))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Transaction Success!**\n📧 `{eml}`\n⏳ *Fetching initial OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
                 markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Failed to buy:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Connection Error:** {e}", parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "confirm_buy_hotmail":
+        api_key = get_user_settings(chat_id)["api_key"]
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail**", parse_mode="Markdown")
+            hotmail_urls = [
+                f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}",
+                f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
+                f"https://yshshopmails.com/v1/api/outlook/create-order.php?key={api_key}"
+            ]
+            resp, raw_resp = None, None
+            for url in hotmail_urls:
+                try:
+                    raw_resp = requests.get(url, timeout=10)
+                    data = raw_resp.json()
+                    if isinstance(data, dict) and data.get("status") == "error": continue
+                    resp = data
+                    break
+                except: continue
+            
+            if not resp and raw_resp:
+                try: resp = raw_resp.json()
+                except: resp = {"mail": raw_resp.text.strip()}
+            elif not resp: resp = {"error": "Hotmail order failed"}
+
+            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
+            pwd = resp.get("password") or resp.get("pwd") or ""
+            token = resp.get("token") or resp.get("refresh_token") or ""
+            client_id = resp.get("client_id") or ""
+            ord_id = resp.get("order_id") or "HOTMAIL_ORDER"
+            
+            if eml and "@" in str(eml):
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # Save to users active session
+                        cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
+                        if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, 'hotmail', token, client_id, chat_id))
+                        else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
+                        
+                        # Also save to bulk_accounts (local stock) and purchase_history
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                    conn.commit()
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox...*", parse_mode="Markdown")
+                time.sleep(1.5)
+                fetch_and_send_emails(chat_id, edit_message_id=message_id)
+            else:
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Hotmail Buy Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "action_refresh" or call.data == "action_refresh_direct":
         bot.answer_callback_query(call.id, "Refreshing Secure Inbox...")
@@ -506,7 +639,154 @@ def handle_query(call):
         send_full_mail_to_chat(chat_id, idx)
         bot.answer_callback_query(call.id)
 
-# 👑 ADMIN SUB-HANDLERS
+# ==========================================
+# 👑 ADMIN & ALIAS / BULK SUB-HANDLERS
+# ==========================================
+def process_base_email_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    base_eml = message.text.strip()
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+
+    if "@" not in base_eml or "." not in base_eml:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Invalid Email!** Please provide a valid base email address.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    set_user_base_email(chat_id, base_eml)
+    try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success! Base Email saved as:** `{base_eml}`\n\nNow you can click '🛠️ Zoho/Yandex Alias' and send any name to generate aliases instantly!", parse_mode="Markdown", reply_markup=markup)
+    except: pass
+
+def process_alias_name_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    name_input = message.text.strip()
+    settings = get_user_settings(chat_id)
+    base_eml = settings["base_email"]
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+
+    if not base_eml:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Base Email Not Set!** Please set your base email in Settings or Alias menu first.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    # Clean name (remove spaces, lowercase)
+    clean_name = re.sub(r'\s+', '', name_input).lower()
+    if not clean_name:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Invalid Name!** Please try again.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    # Split base email into username and domain
+    try:
+        user_part, domain_part = base_eml.split('@')
+    except:
+        user_part, domain_part = "example", "zohomail.com"
+
+    zoho_alias = f"{user_part}+{clean_name}@zohomail.com"
+    yandex_alias = f"{user_part}+{clean_name}@yandex.com"
+
+    result_text = (
+        "✨ **Generated Aliases Successfully!**\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "🏢 **Zoho Alias Format:**\n"
+        f"`{zoho_alias}|AppPassword`\n\n"
+        "🔴 **Yandex Alias Format:**\n"
+        f"`{yandex_alias}|AppPassword`\n\n"
+        "💡 *Tip: Copy your generated alias above and send it here with your App Password to check inbox instantly!*"
+    )
+
+    try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=result_text, parse_mode="Markdown", reply_markup=markup)
+    except: pass
+
+def process_hotmail_bulk_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+
+    text = message.text.strip()
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+
+    if not text.isdigit():
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Invalid Number!** Please send a valid digit (e.g., 5).", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    qty = int(text)
+    if qty < 1 or qty > 50:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Limit Exceeded!** You can buy between 1 and 50 accounts at once.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    api_key = get_user_settings(chat_id)["api_key"]
+    if not api_key:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **API Key Missing!** Set it in Settings first.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"⏳ **Working... Purchasing {qty} Hotmail accounts. Please wait...**", parse_mode="Markdown")
+    except: pass
+
+    success_accounts = []
+    hotmail_urls = [
+        f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}",
+        f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
+        f"https://yshshopmails.com/v1/api/outlook/create-order.php?key={api_key}"
+    ]
+
+    for _ in range(qty):
+        resp = None
+        for url in hotmail_urls:
+            try:
+                raw_resp = requests.get(url, timeout=10)
+                data = raw_resp.json()
+                if isinstance(data, dict) and data.get("status") == "error": continue
+                resp = data
+                break
+            except: continue
+
+        if resp and isinstance(resp, dict):
+            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
+            pwd = resp.get("password") or resp.get("pwd") or ""
+            token = resp.get("token") or resp.get("refresh_token") or ""
+            client_id = resp.get("client_id") or ""
+            ord_id = resp.get("order_id") or "HOTMAIL_BULK"
+
+            if eml and "@" in str(eml):
+                success_accounts.append((eml, pwd, token, client_id, ord_id))
+
+    if not success_accounts:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Bulk Buy Failed!** Could not fetch accounts from server.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    # Save to Database (Bulk Accounts & History)
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            for eml, pwd, token, client_id, ord_id in success_accounts:
+                cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+        conn.commit()
+
+    # Generate .txt file
+    filename = f"Hotmail_Bulk_{chat_id}.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        for eml, pwd, token, client_id, _ in success_accounts:
+            f.write(f"{eml}|{pwd}|{token}|{client_id}\n")
+
+    try: bot.delete_message(chat_id, edit_msg_id)
+    except: pass
+
+    with open(filename, "rb") as f:
+        doc_msg = bot.send_document(chat_id, f, caption=f"🎉 **Bulk Purchase Successful!**\n📦 Total Bought: `{len(success_accounts)}` Hotmail Accounts\n\n*(Also added to your Cloud Bulk List & Purchase History)*", parse_mode="Markdown")
+        track_message(chat_id, doc_msg.message_id)
+    os.remove(filename)
+    show_main_instruction(chat_id)
+
 def process_ban_step(message, edit_msg_id):
     chat_id = message.chat.id
     if chat_id != ADMIN_ID: return
@@ -533,7 +813,7 @@ def process_ban_step(message, edit_msg_id):
                 cursor.execute("INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_to_ban,))
                 conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success!**\nUser / ID `{target_input}` has been **BANNED**.", parse_mode="Markdown", reply_markup=markup)
-            else: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**\nNo user with username `{target_input}` found.", parse_mode="Markdown", reply_markup=markup)
+            else: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"❌ **User Not Found!**", parse_mode="Markdown", reply_markup=markup)
 
 def process_unban_step(message, edit_msg_id):
     chat_id = message.chat.id
@@ -572,7 +852,7 @@ def process_api_key_step(message, edit_msg_id):
     
     if verify_yshshop_api(api_key):
         set_user_api_key(chat_id, api_key)
-        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="✅ **Success! Your API Key is Validated and Saved.**", parse_mode="Markdown", reply_markup=markup)
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="✅ **Success! API Key Validated & Saved.**", parse_mode="Markdown", reply_markup=markup)
         except: pass
     else:
         try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Invalid API Key!**", parse_mode="Markdown", reply_markup=markup)
@@ -617,7 +897,7 @@ def handle_document(message):
                     prov = 'gmail' if 'gmail' in eml.lower() else 'zoho' if 'zoho' in eml.lower() else 'yandex' if 'yandex' in eml.lower() else 'hotmail' if len(parts) >= 4 else 'zoho'
                     
                     if len(parts) == 2:
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, parts[1], prov))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, parts[1], prov))
                         success_count += 1
                     elif len(parts) >= 4:
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, parts[1], prov, parts[2], parts[3]))
@@ -649,6 +929,29 @@ def process_text_messages(message):
         
     if chat_id in active_menu_messages: safe_delete(chat_id, active_menu_messages.pop(chat_id))
 
+    # Check if user is trying to generate alias via name
+    settings = get_user_settings(chat_id)
+    if settings["base_email"] and (" " in text or len(text.split()) > 0) and "@" not in text and "|" not in text and len(text) < 40 and not re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
+        # Treat as name input for Alias Maker
+        clean_name = re.sub(r'\s+', '', text).lower()
+        user_part, domain_part = settings["base_email"].split('@') if '@' in settings["base_email"] else ("example", "zohomail.com")
+        zoho_alias = f"{user_part}+{clean_name}@zohomail.com"
+        yandex_alias = f"{user_part}+{clean_name}@yandex.com"
+
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        res_txt = (
+            "✨ **Generated Aliases Successfully!**\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "🏢 **Zoho Alias Format:**\n"
+            f"`{zoho_alias}|AppPassword`\n\n"
+            "🔴 **Yandex Alias Format:**\n"
+            f"`{yandex_alias}|AppPassword`\n\n"
+            "💡 *Copy any format above with your App Password and send it here to check inbox!*"
+        )
+        msg = bot.send_message(chat_id, res_txt, parse_mode="Markdown", reply_markup=markup)
+        track_message(chat_id, msg.message_id)
+        return
+
     if '|' in text:
         try:
             parts = [p.strip() for p in text.split('|')]
@@ -667,7 +970,7 @@ def process_text_messages(message):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s)", (chat_id, eml, parts[1], prov, parts[2], parts[3]))
                 conn.commit()
 
-            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking Connection to `{eml}`", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking `{eml}`", parse_mode="Markdown")
             track_message(chat_id, msg.message_id)
             fetch_and_send_emails(chat_id, edit_message_id=msg.message_id)
         except Exception:
@@ -687,7 +990,7 @@ def process_text_messages(message):
                     else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s)", (chat_id, text, pwd, prov, ref, cli))
                     conn.commit()
                     
-                    msg = bot.send_message(chat_id, f"⏳ **Working...**\nConnecting securely to `{text}`", parse_mode="Markdown")
+                    msg = bot.send_message(chat_id, f"⏳ **Working...**\nConnecting to `{text}`", parse_mode="Markdown")
                     track_message(chat_id, msg.message_id)
                     fetch_and_send_emails(chat_id, edit_message_id=msg.message_id, bulk_email_to_delete=text)
                 else:
@@ -701,7 +1004,8 @@ def process_text_messages(message):
             msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Updates automatically every 30s)*", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, msg.message_id)
         else:
-            err = bot.send_message(chat_id, "❌ **Error!** Could not generate 2FA code.", parse_mode="Markdown")
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            err = bot.send_message(chat_id, "❌ **Invalid 2FA secret key!** Please check your key and try again.", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, err.message_id)
     else:
         clear_chat_history(chat_id)
@@ -844,15 +1148,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
             except: response_text = "❌ **Outlook API Timeout:** Server took too long to respond."
 
         if bulk_email_to_delete:
-            user_settings = get_user_settings(chat_id)
-            if otp_found and user_settings["auto_delete"]:
+            global_del = get_global_auto_delete()
+            if otp_found and global_del:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
                         cursor.execute("DELETE FROM bulk_accounts WHERE email=%s AND owner_id=%s", (bulk_email_to_delete, chat_id))
                     conn.commit()
-                response_text += f"\n✅ *Auto-Delete ON: Account safely removed from Database.*"
-            elif otp_found and not user_settings["auto_delete"]: response_text += f"\nℹ️ *Auto-Delete OFF: Account preserved in Database.*"
-            elif not otp_found: response_text += f"\nℹ️ *Account safely kept in queue (No OTP found).* "
+                response_text += f"\n✅ *Global Auto-Delete ON: Account removed from Database.*"
+            elif otp_found and not global_del: response_text += f"\nℹ️ *Global Auto-Delete OFF: Account preserved in Database.*"
+            elif not otp_found: response_text += f"\nℹ️ *Account kept in queue (No OTP found).* "
 
         if cached_emails:
             with get_db_connection() as conn:
