@@ -76,7 +76,7 @@ def init_db():
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, email TEXT, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS email_cache (user_id BIGINT, idx INTEGER, subject TEXT, sender TEXT, full_content TEXT, PRIMARY KEY (user_id, idx))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, username TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, temp_alias TEXT, temp_provider TEXT, username TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS bulk_accounts (id SERIAL, owner_id BIGINT, email TEXT PRIMARY KEY, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id BIGINT, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY)''')
@@ -87,6 +87,10 @@ def init_db():
     try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
     except psycopg2.Error: pass
     try: cursor.execute("ALTER TABLE user_settings ADD COLUMN base_email TEXT")
+    except psycopg2.Error: pass
+    try: cursor.execute("ALTER TABLE user_settings ADD COLUMN temp_alias TEXT")
+    except psycopg2.Error: pass
+    try: cursor.execute("ALTER TABLE user_settings ADD COLUMN temp_provider TEXT")
     except psycopg2.Error: pass
     
     try: cursor.execute("DELETE FROM banned_users WHERE user_id=%s", (ADMIN_ID,))
@@ -131,10 +135,10 @@ def is_user_banned(user_id):
 def get_user_settings(user_id):
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT api_key, base_email FROM user_settings WHERE user_id=%s", (user_id,))
+            cursor.execute("SELECT api_key, base_email, temp_alias, temp_provider FROM user_settings WHERE user_id=%s", (user_id,))
             row = cursor.fetchone()
-            if row: return {"api_key": row[0], "base_email": row[1]}
-            return {"api_key": None, "base_email": None}
+            if row: return {"api_key": row[0], "base_email": row[1], "temp_alias": row[2], "temp_provider": row[3]}
+            return {"api_key": None, "base_email": None, "temp_alias": None, "temp_provider": None}
 
 def set_user_api_key(user_id, api_key):
     with get_db_connection() as conn:
@@ -150,6 +154,14 @@ def set_user_base_email(user_id, base_email):
             cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
             if cursor.fetchone(): cursor.execute("UPDATE user_settings SET base_email=%s WHERE user_id=%s", (base_email, user_id))
             else: cursor.execute("INSERT INTO user_settings (user_id, base_email) VALUES (%s, %s)", (user_id, base_email))
+        conn.commit()
+
+def set_temp_alias(user_id, alias, provider):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
+            if cursor.fetchone(): cursor.execute("UPDATE user_settings SET temp_alias=%s, temp_provider=%s WHERE user_id=%s", (alias, provider, user_id))
+            else: cursor.execute("INSERT INTO user_settings (user_id, temp_alias, temp_provider) VALUES (%s, %s, %s)", (user_id, alias, provider))
         conn.commit()
 
 def verify_yshshop_api(api_key):
@@ -276,18 +288,34 @@ def handle_query(call):
             "🛠️ **Zoho & Yandex Alias Generator**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             f"📌 **Your Base Email:** `{base_eml}`\n\n"
-            "Send a name (e.g., `sayem ahamed`), and I will generate formatted alias emails like:\n"
-            "`base+sayemahamed@zohomail.com`\n"
-            "`base+sayemahamed@yandex.com`\n\n"
+            "Send a name (e.g., `sayem ahamed`), and I will generate formatted alias emails with instant inbox check options!\n\n"
             "👇 **Send your name now or update your base email in Settings first!**"
         )
         markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email", callback_data="action_set_base_email"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email", callback_data="action_set_base_email"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=alias_text, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "action_set_base_email":
         msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👇 **Please send your Base Email address** (e.g., `sayem@zohomail.com`):", parse_mode="Markdown")
         bot.register_next_step_handler(call.message, process_base_email_step, msg.message_id)
+
+    elif call.data == "check_alias_zoho":
+        settings = get_user_settings(chat_id)
+        alias = settings["temp_alias"]
+        if not alias or "zohomail.com" not in alias:
+            return bot.answer_callback_query(call.id, "⚠️ Please generate a Zoho alias first!", show_alert=True)
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"👇 **Please send your Zoho App Password** for `{alias}` to check inbox and fetch code instantly:", parse_mode="Markdown")
+        set_temp_alias(chat_id, alias, "zoho")
+        bot.register_next_step_handler(call.message, process_alias_password_step, msg.message_id)
+
+    elif call.data == "check_alias_yandex":
+        settings = get_user_settings(chat_id)
+        alias = settings["temp_alias"]
+        if not alias or "yandex.com" not in alias:
+            return bot.answer_callback_query(call.id, "⚠️ Please generate a Yandex alias first!", show_alert=True)
+        msg = bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"👇 **Please send your Yandex App Password** for `{alias}` to check inbox and fetch code instantly:", parse_mode="Markdown")
+        set_temp_alias(chat_id, alias, "yandex")
+        bot.register_next_step_handler(call.message, process_alias_password_step, msg.message_id)
 
     elif call.data == "action_admin_panel":
         if chat_id != ADMIN_ID: return
@@ -314,7 +342,7 @@ def handle_query(call):
             markup.add(types.InlineKeyboardButton("👥 View All Users", callback_data="admin_view_users"))
             markup.add(types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user"), types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user"))
             markup.add(types.InlineKeyboardButton(f"Toggle Global Auto-Delete", callback_data="admin_toggle_autodel"))
-            markup.add(types.InlineKeyboardButton("🏠 Back to Main Menu", callback_data="action_menu"))
+            markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=stats_msg, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ Admin Error: {e}")
@@ -405,7 +433,7 @@ def handle_query(call):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for r_id, eml in rows: markup.add(types.InlineKeyboardButton(eml, callback_data=f"bf_{r_id}"))
         markup.row(types.InlineKeyboardButton("📤 Export List", callback_data="action_export_bulk"))
-        markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_bulk_list"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+        markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_bulk_list"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=list_text, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "action_export_bulk":
@@ -493,7 +521,7 @@ def handle_query(call):
             )
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"))
-            markup.row(types.InlineKeyboardButton("🔥 Buy Hotmail/Outlook", callback_data="action_buy_hotmail_menu"))
+            markup.row(types.InlineKeyboardButton("🔥 Buy Hotmail", callback_data="action_buy_hotmail_menu"))
             markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=dashboard_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
@@ -503,7 +531,7 @@ def handle_query(call):
     elif call.data == "action_buy_gmail":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_gmail"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🛒 **Checkout Confirmation (Gmail)**\n\nAre you sure you want to deduct balance and buy 1 Facebook Gmail?", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "action_buy_hotmail_menu":
@@ -518,7 +546,7 @@ def handle_query(call):
     elif call.data == "buy_hm_single":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_hotmail"), types.InlineKeyboardButton("🏠 Cancel", callback_data="action_menu"))
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_hotmail"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Single Checkout (Hotmail/Outlook)**\n\nAre you sure you want to buy 1 account?", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "buy_hm_bulk":
@@ -604,12 +632,10 @@ def handle_query(call):
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # Save to users active session
                         cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, 'hotmail', token, client_id, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
                         
-                        # Also save to bulk_accounts (local stock) and purchase_history
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
                     conn.commit()
@@ -659,49 +685,42 @@ def process_base_email_step(message, edit_msg_id):
     try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"✅ **Success! Base Email saved as:** `{base_eml}`\n\nNow you can click '🛠️ Zoho/Yandex Alias' and send any name to generate aliases instantly!", parse_mode="Markdown", reply_markup=markup)
     except: pass
 
-def process_alias_name_step(message, edit_msg_id):
+def process_alias_password_step(message, edit_msg_id):
     chat_id = message.chat.id
+    app_password = message.text.strip()
+    track_message(chat_id, message.message_id)
     try: bot.delete_message(chat_id, message.message_id)
     except: pass
 
-    name_input = message.text.strip()
     settings = get_user_settings(chat_id)
-    base_eml = settings["base_email"]
+    alias = settings["temp_alias"]
+    provider = settings["temp_provider"]
+
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
-    if not base_eml:
-        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Base Email Not Set!** Please set your base email in Settings or Alias menu first.", parse_mode="Markdown", reply_markup=markup)
+    if not alias or not provider:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Session Expired!** Please generate a new alias first.", parse_mode="Markdown", reply_markup=markup)
         except: pass
         return
 
-    # Clean name (remove spaces, lowercase)
-    clean_name = re.sub(r'\s+', '', name_input).lower()
-    if not clean_name:
-        try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text="❌ **Invalid Name!** Please try again.", parse_mode="Markdown", reply_markup=markup)
-        except: pass
-        return
+    # Save to active users session as email|apppass format
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
+            if cursor.fetchone():
+                cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (alias, app_password, provider, chat_id))
+            else:
+                cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, alias, app_password, provider))
+            
+            # Also save to bulk_accounts and purchase_history
+            cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, alias, app_password, provider))
+            cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, 'ALIAS_GEN')", (chat_id, alias))
+        conn.commit()
 
-    # Split base email into username and domain
-    try:
-        user_part, domain_part = base_eml.split('@')
-    except:
-        user_part, domain_part = "example", "zohomail.com"
-
-    zoho_alias = f"{user_part}+{clean_name}@zohomail.com"
-    yandex_alias = f"{user_part}+{clean_name}@yandex.com"
-
-    result_text = (
-        "✨ **Generated Aliases Successfully!**\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏢 **Zoho Alias Format:**\n"
-        f"`{zoho_alias}|AppPassword`\n\n"
-        "🔴 **Yandex Alias Format:**\n"
-        f"`{yandex_alias}|AppPassword`\n\n"
-        "💡 *Tip: Copy your generated alias above and send it here with your App Password to check inbox instantly!*"
-    )
-
-    try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=result_text, parse_mode="Markdown", reply_markup=markup)
+    try: bot.edit_message_text(chat_id=chat_id, message_id=edit_msg_id, text=f"⏳ **Connecting to IMAP Server for `{alias}`...**", parse_mode="Markdown")
     except: pass
+
+    fetch_and_send_emails(chat_id, edit_message_id=edit_msg_id)
 
 def process_hotmail_bulk_step(message, edit_msg_id):
     chat_id = message.chat.id
@@ -764,7 +783,6 @@ def process_hotmail_bulk_step(message, edit_msg_id):
         except: pass
         return
 
-    # Save to Database (Bulk Accounts & History)
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             for eml, pwd, token, client_id, ord_id in success_accounts:
@@ -772,7 +790,6 @@ def process_hotmail_bulk_step(message, edit_msg_id):
                 cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
         conn.commit()
 
-    # Generate .txt file
     filename = f"Hotmail_Bulk_{chat_id}.txt"
     with open(filename, "w", encoding="utf-8") as f:
         for eml, pwd, token, client_id, _ in success_accounts:
@@ -929,16 +946,20 @@ def process_text_messages(message):
         
     if chat_id in active_menu_messages: safe_delete(chat_id, active_menu_messages.pop(chat_id))
 
-    # Check if user is trying to generate alias via name
     settings = get_user_settings(chat_id)
     if settings["base_email"] and (" " in text or len(text.split()) > 0) and "@" not in text and "|" not in text and len(text) < 40 and not re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
-        # Treat as name input for Alias Maker
         clean_name = re.sub(r'\s+', '', text).lower()
         user_part, domain_part = settings["base_email"].split('@') if '@' in settings["base_email"] else ("example", "zohomail.com")
         zoho_alias = f"{user_part}+{clean_name}@zohomail.com"
         yandex_alias = f"{user_part}+{clean_name}@yandex.com"
 
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        # Save latest generated alias for easy inbox check buttons
+        set_temp_alias(chat_id, zoho_alias, "zoho")
+
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(types.InlineKeyboardButton("📥 Check Zoho Inbox", callback_data="check_alias_zoho"), types.InlineKeyboardButton("📥 Check Yandex Inbox", callback_data="check_alias_yandex"))
+        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+
         res_txt = (
             "✨ **Generated Aliases Successfully!**\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
@@ -946,7 +967,7 @@ def process_text_messages(message):
             f"`{zoho_alias}|AppPassword`\n\n"
             "🔴 **Yandex Alias Format:**\n"
             f"`{yandex_alias}|AppPassword`\n\n"
-            "💡 *Copy any format above with your App Password and send it here to check inbox!*"
+            "👇 **Click below to check inbox instantly:**"
         )
         msg = bot.send_message(chat_id, res_txt, parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
@@ -974,7 +995,8 @@ def process_text_messages(message):
             track_message(chat_id, msg.message_id)
             fetch_and_send_emails(chat_id, edit_message_id=msg.message_id)
         except Exception:
-            err = bot.send_message(chat_id, "❌ **Format Error!** Check manual format.", parse_mode="Markdown")
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            err = bot.send_message(chat_id, "❌ **Format Error!** Check manual format.", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, err.message_id)
 
     elif '@' in text and '.' in text:
@@ -994,17 +1016,18 @@ def process_text_messages(message):
                     track_message(chat_id, msg.message_id)
                     fetch_and_send_emails(chat_id, edit_message_id=msg.message_id, bulk_email_to_delete=text)
                 else:
-                    err = bot.send_message(chat_id, f"❌ **Error:** `{text}` not found in your Cloud DB!", parse_mode="Markdown")
+                    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                    err = bot.send_message(chat_id, f"❌ **Error:** `{text}` not found in your Cloud DB!", parse_mode="Markdown", reply_markup=markup)
                     track_message(chat_id, err.message_id)
                 
     elif re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
         code = get_totp_token(text)
         if code:
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Updates automatically every 30s)*", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, msg.message_id)
         else:
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             err = bot.send_message(chat_id, "❌ **Invalid 2FA secret key!** Please check your key and try again.", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, err.message_id)
     else:
@@ -1121,7 +1144,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                         if fb_found: break
                     if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo specific FB OTP found for this alias."
                 mail.logout()
-            except imaplib.IMAP4.error: response_text = "❌ **IMAP Authentication Failed!** Check Provider / Password."
+            except imaplib.IMAP4.error: response_text = "❌ **IMAP Authentication Failed!** Check App Password / Provider."
 
         elif provider == 'hotmail':
             url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
