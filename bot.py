@@ -12,7 +12,7 @@ import html
 import os
 import threading
 import time
-from flask import Flask
+from flask import Flask, request
 import hmac
 import base64
 import struct
@@ -62,17 +62,25 @@ def safe_delete(chat_id, message_id):
     except: pass
 
 # ==========================================
-# 🌐 FLASK SERVER (For 24/7 Hosting)
+# 🌐 FLASK SERVER (Vercel Webhook Setup)
 # ==========================================
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Mail Bot is Running Successfully! Premium Version V4.0 (Supabase PostgreSQL Enabled)"
+# 👇 আপনার Vercel প্রজেক্টের লিংক এখানে বসানো হয়েছে 👇
+VERCEL_URL = "https://6t9.vercel.app/"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def getMessage():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/")
+def webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=VERCEL_URL + BOT_TOKEN)
+    return "Webhook Set Perfectly! Premium Version V4.0 (Supabase PostgreSQL Enabled)", 200
 
 # ==========================================
 # 💾 DATABASE MANAGEMENT (POSTGRESQL)
@@ -905,18 +913,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
             track_message(chat_id, err.message_id)
 
 # ==========================================
-# 🚀 MAIN EXECUTION THREADS
+# 🚀 MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    cleanup_thread = threading.Thread(target=auto_cleanup_task, daemon=True)
-    cleanup_thread.start()
-    
-    bot.remove_webhook()
-    logging.info("Premium V4.0 (Cloud Database) Started!")
-    
-    while True:
-        try: bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
-        except Exception: time.sleep(5)
+    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
