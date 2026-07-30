@@ -314,6 +314,28 @@ def handle_query(call):
         show_main_instruction(chat_id, message_id=message_id)
         return
 
+    elif call.data.startswith("refresh_2fa_"):
+        secret = call.data.replace("refresh_2fa_", "")
+        code = get_totp_token(secret)
+        if code:
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("🔄 Refresh Code", callback_data=f"refresh_2fa_{secret}"))
+            markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            new_text = (
+                "🔐 **Live 2FA Generator**\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🔹 **Code:** `{code}`\n"
+                f"🔑 **Secret:** `{secret}`\n\n"
+                f"*(Refreshed at {datetime.now().strftime('%I:%M:%S %p')})*"
+            )
+            try:
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text, parse_mode="Markdown", reply_markup=markup)
+            except: pass
+            bot.answer_callback_query(call.id, f"✅ Refreshed Code: {code}")
+        else:
+            bot.answer_callback_query(call.id, "❌ Error generating 2FA code!", show_alert=True)
+        return
+
     elif call.data == "action_alias_maker":
         settings = get_user_settings(chat_id)
         base_eml = settings["base_email"] or "Not Set"
@@ -1093,8 +1115,10 @@ def process_text_messages(message):
     elif re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
         code = get_totp_token(text)
         if code:
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Updates automatically every 30s)*", parse_mode="Markdown", reply_markup=markup)
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("🔄 Refresh Code", callback_data=f"refresh_2fa_{text}"))
+            markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Click Refresh Code below for latest 2FA)*", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, msg.message_id)
         else:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
