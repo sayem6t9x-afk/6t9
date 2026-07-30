@@ -31,8 +31,8 @@ ADMIN_ID = 5605925198
 ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
 BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
 
-# 🐘 SUPABASE POSTGRESQL DATABASE URL
-DATABASE_URL = "postgresql://postgres:WQsa9069%23%2A6T9@db.ekoboehpqbiejiqfuuqa.supabase.co:5432/postgres"
+# 🐘 SUPABASE POSTGRESQL DATABASE URL (New Updated URL)
+DATABASE_URL = "postgresql://postgres:WQsa9069%23%2A6T9@db.cvqaqgqzlgbrlntvvlfn.supabase.co:5432/postgres"
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
