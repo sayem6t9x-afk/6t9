@@ -12,11 +12,7 @@ import html
 import os
 import threading
 import time
-from flask import Flask, request
-import hmac
-import base64
-import struct
-import hashlib
+from flask import Flask
 
 # ==========================================
 # ⚙️ CONFIGURATIONS & LOGGING
@@ -31,7 +27,7 @@ ADMIN_ID = 5605925198
 ADMIN_USERNAME_LINK = "[@sayem6t9](https://t.me/sayem6t9)"
 BANNED_MSG = f"🚫 **You have been BANNED from using this bot!**\n\nTo request an unban, please message the Admin: {ADMIN_USERNAME_LINK}"
 
-# 🐘 SUPABASE POSTGRESQL DATABASE URL (Vercel Serverless Ready - Port 6543)
+# 🐘 SUPABASE POSTGRESQL DATABASE URL (Render Ready)
 DATABASE_URL = "postgresql://postgres.cvqaqgqzlgbrlntvvlfn:WQsa9069%23%2A6T9@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -62,31 +58,13 @@ def safe_delete(chat_id, message_id):
     except: pass
 
 # ==========================================
-# 🌐 FLASK SERVER (Vercel Webhook Setup)
+# 🌐 FLASK SERVER (Render Dummy Web Service)
 # ==========================================
 app = Flask(__name__)
 
-# 👇 Vercel Project URL 👇
-VERCEL_URL = "https://6t9.vercel.app/"
-
-@app.route('/' + BOT_TOKEN, methods=['POST'])
-def getMessage():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "!", 200
-
 @app.route("/")
-def webhook():
-    # 🚀 Database setup moved here to prevent Vercel boot crash!
-    try:
-        init_db()
-    except Exception as e:
-        return f"<h1>Database Connection Error!</h1><p>{e}</p><br>Check if your Supabase details are correct.", 500
-        
-    bot.remove_webhook()
-    bot.set_webhook(url=VERCEL_URL + BOT_TOKEN)
-    return "Webhook Set Perfectly! Premium Version V4.0 (Supabase PostgreSQL Enabled)", 200
+def home():
+    return "Render Web Service is Live and Telegram Bot is Running Perfectly!", 200
 
 # ==========================================
 # 💾 DATABASE MANAGEMENT (POSTGRESQL)
@@ -189,6 +167,11 @@ def detect_otp_type(subject, content):
         code_match = re.search(r'\b\d{6,8}\b', combined_text)
         return "📘 FACEBOOK OTP", (code_match.group(0) if code_match else "Not Found")
     return None, None
+
+import hmac
+import base64
+import struct
+import hashlib
 
 def get_totp_token(secret):
     try:
@@ -899,7 +882,18 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
             track_message(chat_id, err.message_id)
 
 # ==========================================
-# 🚀 MAIN EXECUTION
+# 🚀 MAIN EXECUTION (Render Ready)
 # ==========================================
+def start_bot():
+    bot.remove_webhook()
+    bot.infinity_polling(skip_pending=True)
+
 if __name__ == "__main__":
+    init_db()  # First, initialize the database
+    
+    # Run the Telegram Bot in a separate background thread
+    bot_thread = threading.Thread(target=start_bot)
+    bot_thread.start()
+    
+    # Start the Flask Web Service on the main thread (required by Render)
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
