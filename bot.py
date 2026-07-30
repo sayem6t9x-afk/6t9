@@ -75,7 +75,7 @@ def init_db():
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, email TEXT, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS email_cache (user_id BIGINT, idx INTEGER, subject TEXT, sender TEXT, full_content TEXT, PRIMARY KEY (user_id, idx))''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, temp_alias TEXT, temp_provider TEXT, temp_name TEXT, username TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, base_password TEXT, temp_alias TEXT, temp_provider TEXT, temp_name TEXT, username TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS bulk_accounts (id SERIAL, owner_id BIGINT, email TEXT PRIMARY KEY, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id BIGINT, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS alias_history (id SERIAL PRIMARY KEY, owner_id BIGINT, email TEXT, password TEXT, provider TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
@@ -87,6 +87,8 @@ def init_db():
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN username TEXT")
         except psycopg2.Error: pass
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN base_email TEXT")
+        except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE user_settings ADD COLUMN base_password TEXT")
         except psycopg2.Error: pass
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN temp_alias TEXT")
         except psycopg2.Error: pass
@@ -151,11 +153,11 @@ def get_user_settings(user_id):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT api_key, base_email, temp_alias, temp_provider, temp_name FROM user_settings WHERE user_id=%s", (user_id,))
+                cursor.execute("SELECT api_key, base_email, base_password, temp_alias, temp_provider, temp_name FROM user_settings WHERE user_id=%s", (user_id,))
                 row = cursor.fetchone()
-                if row: return {"api_key": row[0], "base_email": row[1], "temp_alias": row[2], "temp_provider": row[3], "temp_name": row[4]}
+                if row: return {"api_key": row[0], "base_email": row[1], "base_password": row[2], "temp_alias": row[3], "temp_provider": row[4], "temp_name": row[5]}
     except: pass
-    return {"api_key": None, "base_email": None, "temp_alias": None, "temp_provider": None, "temp_name": None}
+    return {"api_key": None, "base_email": None, "base_password": None, "temp_alias": None, "temp_provider": None, "temp_name": None}
 
 def set_user_api_key(user_id, api_key):
     try:
@@ -167,13 +169,15 @@ def set_user_api_key(user_id, api_key):
             conn.commit()
     except: pass
 
-def set_user_base_email(user_id, base_email):
+def set_user_base_credentials(user_id, base_email, base_password):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT user_id FROM user_settings WHERE user_id=%s", (user_id,))
-                if cursor.fetchone(): cursor.execute("UPDATE user_settings SET base_email=%s WHERE user_id=%s", (base_email, user_id))
-                else: cursor.execute("INSERT INTO user_settings (user_id, base_email) VALUES (%s, %s)", (user_id, base_email))
+                if cursor.fetchone(): 
+                    cursor.execute("UPDATE user_settings SET base_email=%s, base_password=%s WHERE user_id=%s", (base_email, base_password, user_id))
+                else: 
+                    cursor.execute("INSERT INTO user_settings (user_id, base_email, base_password) VALUES (%s, %s, %s)", (user_id, base_email, base_password))
             conn.commit()
     except: pass
 
@@ -218,12 +222,13 @@ def get_html_body(msg):
     except: pass
     return "No HTML Content Found."
 
-def detect_otp_type(subject, content):
+def detect_facebook_otp(subject, content):
     combined_text = (subject + " " + content).lower()
     if "facebook" in combined_text or "fb" in combined_text:
         code_match = re.search(r'\b\d{6,8}\b', combined_text)
-        return "📘 FACEBOOK OTP", (code_match.group(0) if code_match else "Not Found")
-    return None, None
+        if code_match:
+            return code_match.group(0)
+    return None
 
 import hmac
 import base64
@@ -316,17 +321,17 @@ def handle_query(call):
             "🛠️ **Zoho & Yandex Alias Generator**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             f"📌 **Your Base Email:** `{base_eml}`\n\n"
-            "Send any name (e.g., `sayem ahamed`), and I will automatically ask if you want to create alias mails!\n\n"
+            "Send any name (e.g., `sayem ahamed`), and I will automatically generate the corresponding domain alias for you!\n\n"
             "👇 **Options below:**"
         )
         markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email", callback_data="action_set_base_email"), types.InlineKeyboardButton("📜 Created Aliases History", callback_data="action_alias_history"))
+        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email & Pass", callback_data="action_set_base_email"), types.InlineKeyboardButton("📜 Created Aliases History", callback_data="action_alias_history"))
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=alias_text, parse_mode="Markdown", reply_markup=markup)
         except: pass
 
     elif call.data == "action_set_base_email":
-        msg = bot.send_message(chat_id, "👇 **Please send your Base Email address** (e.g., `example@zohomail.com` or `example@yandex.com`):", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|YourAppPassword` or `example@yandex.com|YourAppPassword`)", parse_mode="Markdown")
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_base_email_step, msg.message_id)
 
@@ -334,16 +339,38 @@ def handle_query(call):
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, password, provider, created_at FROM alias_history WHERE owner_id=%s ORDER BY created_at DESC LIMIT 20", (chat_id,))
+                    cursor.execute("SELECT id, email, password, provider, created_at FROM alias_history WHERE owner_id=%s ORDER BY created_at DESC LIMIT 20", (chat_id,))
                     rows = cursor.fetchall()
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your alias history is empty.", show_alert=True)
             
-            history_text = "📜 **Your Created Alias Mails History**\n━━━━━━━━━━━━━━━━━━━\n\n"
-            for idx, (eml, pwd, prov, date_str) in enumerate(rows, 1):
-                history_text += f"**{idx}.** `{eml}|{pwd}` `({prov.upper()})`\n"
-            
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            history_text = "📜 **Your Created Alias Mails History**\n━━━━━━━━━━━━━━━━━━━\n\nTap any email below to check inbox for Facebook OTP:\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for r_id, eml, pwd, prov, date_str in rows:
+                markup.add(types.InlineKeyboardButton(f"📥 {eml} ({prov.upper()})", callback_data=f"chk_alias_{r_id}"))
+            markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    elif call.data.startswith("chk_alias_"):
+        r_id = call.data.split("_")[2]
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, provider FROM alias_history WHERE id=%s AND owner_id=%s", (r_id, chat_id))
+                    row = cursor.fetchone()
+            if row:
+                eml, pwd, prov = row
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
+                        if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (eml, pwd, prov, chat_id))
+                        else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, pwd, prov))
+                    conn.commit()
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
+                fetch_and_send_emails(chat_id, edit_message_id=message_id)
+            else:
+                bot.answer_callback_query(call.id, "⚠️ Alias record not found!", show_alert=True)
         except Exception as e:
             bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
@@ -351,31 +378,64 @@ def handle_query(call):
         settings = get_user_settings(chat_id)
         name_input = settings["temp_name"]
         base_eml = settings["base_email"]
+        base_pwd = settings["base_password"]
         if not base_eml or not name_input:
             return bot.answer_callback_query(call.id, "⚠️ Session expired! Send the name again.", show_alert=True)
 
         clean_name = re.sub(r'\s+', '', name_input).lower()
         user_part, domain_part = base_eml.split('@') if '@' in base_eml else ("example", "zohomail.com")
-        zoho_alias = f"{user_part}+{clean_name}@zohomail.com"
-        yandex_alias = f"{user_part}+{clean_name}@yandex.com"
+        
+        # Smart domain detection: Generate ONLY the corresponding domain alias
+        if "yandex" in domain_part.lower():
+            target_alias = f"{user_part}+{clean_name}@yandex.com"
+            provider = "yandex"
+        else:
+            target_alias = f"{user_part}+{clean_name}@zohomail.com"
+            provider = "zoho"
 
-        set_temp_data(chat_id, zoho_alias, "zoho", name_input)
+        # Save to alias_history automatically with base password
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("INSERT INTO alias_history (owner_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, target_alias, base_pwd, provider))
+                conn.commit()
+        except Exception: pass
+
+        set_temp_data(chat_id, target_alias, provider, name_input)
 
         markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("📥 Check Inbox (Facebook OTP)", callback_data="action_check_latest_alias"))
         markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
         res_txt = (
-            "✨ **Alias Mails Generated Successfully!**\n"
+            "✨ **Alias Mail Generated Successfully!**\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
-            "🏢 **Zoho Alias:**\n"
-            f"`{zoho_alias}`\n\n"
-            "🔴 **Yandex Alias:**\n"
-            f"`{yandex_alias}`\n\n"
-            "👇 **To check inbox, send any alias with your App Password using the pipe (`|`) format like this:**\n"
-            "`alias@zohomail.com|YourAppPassword`"
+            f"🏢 **Your {provider.upper()} Alias:**\n"
+            f"`{target_alias}`\n\n"
+            "👇 *Click the button below to check inbox for Facebook OTP instantly!*"
         )
         try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=res_txt, parse_mode="Markdown", reply_markup=markup)
         except: pass
+
+    elif call.data == "action_check_latest_alias":
+        settings = get_user_settings(chat_id)
+        latest_alias = settings["temp_alias"]
+        base_pwd = settings["base_password"]
+        provider = settings["temp_provider"] or "zoho"
+        if not latest_alias:
+            return bot.answer_callback_query(call.id, "⚠️ No active alias found!", show_alert=True)
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
+                    if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (latest_alias, base_pwd, provider, chat_id))
+                    else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, latest_alias, base_pwd, provider))
+                conn.commit()
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{latest_alias}`", parse_mode="Markdown")
+            fetch_and_send_emails(chat_id, edit_message_id=message_id)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
     elif call.data == "confirm_alias_no":
         bot.answer_callback_query(call.id, "Cancelled.")
@@ -495,7 +555,7 @@ def handle_query(call):
                     cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s", (chat_id,))
                     total = cursor.fetchone()[0]
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Cloud Bulk List is empty! Upload a .txt file first.", show_alert=True)
-            list_text = f"📁 **Your Private Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch OTP:"
+            list_text = f"📁 **Your Private Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch Facebook OTP:"
             markup = types.InlineKeyboardMarkup(row_width=1)
             for r_id, eml in rows: markup.add(types.InlineKeyboardButton(eml, callback_data=f"bf_{r_id}"))
             markup.row(types.InlineKeyboardButton("📤 Export List", callback_data="action_export_bulk"))
@@ -538,7 +598,7 @@ def handle_query(call):
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, prov, ref, cli, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s)", (chat_id, eml, pwd, prov, ref, cli))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking `{eml}`", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
                 fetch_and_send_emails(chat_id, edit_message_id=message_id, bulk_email_to_delete=eml)
             else: bot.answer_callback_query(call.id, "⚠️ Account not found!", show_alert=True)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
@@ -649,7 +709,7 @@ def handle_query(call):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, ord_id, 'gmail'))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
@@ -699,7 +759,7 @@ def handle_query(call):
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
@@ -731,16 +791,20 @@ def handle_query(call):
 # ==========================================
 def process_base_email_step(message, edit_msg_id):
     chat_id = message.chat.id
-    base_eml = message.text.strip()
+    text = message.text.strip()
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
-    if "@" not in base_eml or "." not in base_eml:
-        msg = bot.send_message(chat_id, "❌ **Invalid Email!** Please provide a valid base email address (e.g., `example@zohomail.com`).", parse_mode="Markdown", reply_markup=markup)
+    if "|" not in text or "@" not in text:
+        msg = bot.send_message(chat_id, "❌ **Invalid Format!** Please send using `email|AppPassword` format (e.g., `example@zohomail.com|YourAppPassword`).", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         return
 
-    set_user_base_email(chat_id, base_eml)
-    msg = bot.send_message(chat_id, f"✅ **Success! Base Email saved as:** `{base_eml}`\n\nNow simply send any name (e.g., `sayem ahamed`) in chat to generate aliases automatically!", parse_mode="Markdown", reply_markup=markup)
+    parts = [p.strip() for p in text.split('|')]
+    base_eml = parts[0]
+    base_pwd = parts[1]
+
+    set_user_base_credentials(chat_id, base_eml, base_pwd)
+    msg = bot.send_message(chat_id, f"✅ **Success! Base Email & App Password saved.**\n\nBase Email: `{base_eml}`\n\nNow simply send any name (e.g., `sayem ahamed`) in chat to generate your domain alias automatically!", parse_mode="Markdown", reply_markup=markup)
     track_message(chat_id, msg.message_id)
 
 def process_hotmail_bulk_step(message, edit_msg_id):
@@ -961,7 +1025,7 @@ def process_text_messages(message):
         set_temp_data(chat_id, None, None, text)
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(types.InlineKeyboardButton("✅ Yes", callback_data="confirm_alias_yes"), types.InlineKeyboardButton("❌ No", callback_data="confirm_alias_no"))
-        msg = bot.send_message(chat_id, f"📌 Do you want to create alias mails for **{text}**?", parse_mode="Markdown", reply_markup=markup)
+        msg = bot.send_message(chat_id, f"📌 Do you want to create an alias mail for **{text}**?", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         return
 
@@ -979,7 +1043,6 @@ def process_text_messages(message):
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (eml, pwd, prov, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, pwd, prov))
                         
-                        # Save to bulk_accounts & alias_history for future access
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, pwd, prov))
                         cursor.execute("INSERT INTO alias_history (owner_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, pwd, prov))
 
@@ -989,7 +1052,7 @@ def process_text_messages(message):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s)", (chat_id, eml, pwd, prov, parts[2], parts[3]))
                 conn.commit()
 
-            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking `{eml}`", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
             track_message(chat_id, msg.message_id)
             fetch_and_send_emails(chat_id, edit_message_id=msg.message_id)
         except Exception as e:
@@ -1102,7 +1165,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                         cached_emails.append((subject, "API@yshshopmails", f"Facebook OTP Code: {otp_code} (Verified API)"))
                         response_text = f"📨 **Live Inbox ({email_address}) [yshshopmails API]:**\n\n🔹 **[📘 FACEBOOK OTP]** Code: `{otp_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                     elif "error" in data: response_text = f"❌ **API Sync Error:** {data['error']}"
-                    else: response_text = f"📭 **Live Inbox ({email_address})**\nScanning complete. No FB OTP found yet."
+                    else: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP found."
                 except: response_text = "❌ **API Connection Timeout.** Try again."
 
         elif provider in ['zoho', 'yandex']:
@@ -1135,14 +1198,16 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                                 raw_html, subject, encoding = get_html_body(msg), decode_header(msg["Subject"])[0], None
                                 if isinstance(subject, bytes): subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
                                 from_ = msg.get("From", "Unknown")
-                                lbl, code = detect_otp_type(subject, clean_html_tags(raw_html))
-                                if lbl: 
+                                
+                                # STRICT FILTER: ONLY Facebook OTP accepted
+                                fb_code = detect_facebook_otp(subject, clean_html_tags(raw_html))
+                                if fb_code: 
                                     cached_emails.append((subject, from_, raw_html))
-                                    response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                    response_text += f"🔹 **[📘 FACEBOOK OTP]** Code: `{fb_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                                     fb_found, otp_found = True, True
                                     break
                         if fb_found: break
-                    if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo specific FB OTP found for this alias."
+                    if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP found for this specific alias."
                 mail.logout()
             except imaplib.IMAP4.error: response_text = "❌ **IMAP Authentication Failed!** Check App Password / Provider."
 
@@ -1160,13 +1225,15 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                             msg_to = str(msg.get("to", "")).lower()
                             if msg_to and target_eml_lower not in msg_to: continue
                             raw_body, subject, from_sender = msg.get("message", "No Content"), msg.get("subject", "No Subject"), msg.get("from", "Outlook System")
-                            lbl, code = detect_otp_type(subject, clean_html_tags(raw_body))
-                            if lbl:
+                            
+                            # STRICT FILTER: ONLY Facebook OTP accepted
+                            fb_code = detect_facebook_otp(subject, clean_html_tags(raw_body))
+                            if fb_code:
                                 cached_emails.append((subject, from_sender, raw_body))
-                                response_text += f"🔹 **[{lbl}]** Code: `{code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                response_text += f"🔹 **[📘 FACEBOOK OTP]** Code: `{fb_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                                 fb_found, otp_found = True, True
                                 break
-                        if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo FB OTP matched."
+                        if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP matched."
                 else: response_text = "❌ **Outlook Server Error:** Gateway unavailable."
             except: response_text = "❌ **Outlook API Timeout:** Server took too long to respond."
 
@@ -1179,7 +1246,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                     conn.commit()
                 response_text += f"\n✅ *Global Auto-Delete ON: Account removed from Database.*"
             elif otp_found and not global_del: response_text += f"\nℹ️ *Global Auto-Delete OFF: Account preserved in Database.*"
-            elif not otp_found: response_text += f"\nℹ️ *Account kept in queue (No OTP found).* "
+            elif not otp_found: response_text += f"\nℹ️ *Account kept in queue (No Facebook OTP found).* "
 
         if cached_emails:
             with get_db_connection() as conn:
