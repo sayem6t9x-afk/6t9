@@ -231,37 +231,16 @@ def detect_facebook_otp(subject, content):
             return code_match.group(0)
     return None
 
-def parse_stock(resp):
+def get_service_stock(api_key, service_name):
     try:
-        if isinstance(resp, (int, float)):
-            return str(int(resp))
-        if isinstance(resp, str):
-            if resp.isdigit():
-                return resp
-            try:
-                resp = json.loads(resp)
-            except:
-                pass
-        if isinstance(resp, dict):
-            for key in ["stock", "count", "data", "available", "total", "hotmail", "outlook"]:
-                if key in resp:
-                    val = resp[key]
-                    if isinstance(val, int):
-                        return str(val)
-                    if isinstance(val, dict):
-                        for subk in ["stock", "count", "available", "total"]:
-                            if subk in val and isinstance(val[subk], int):
-                                return str(val[subk])
-                    if str(val).isdigit():
-                        return str(val)
-            for v in resp.values():
-                if isinstance(v, int):
-                    return str(v)
-                if str(v).isdigit():
-                    return str(v)
-        return str(resp)
+        headers = {"api_key": api_key} if api_key else {}
+        r = requests.get("https://yshshopmails.com/v1/stock", params={"service": service_name}, headers=headers, timeout=10)
+        data = r.json()
+        if isinstance(data, dict) and "stock" in data:
+            return str(data["stock"])
     except:
-        return "0"
+        pass
+    return "0"
 
 import hmac
 import base64
@@ -347,6 +326,7 @@ def handle_query(call):
         show_main_instruction(chat_id, message_id=message_id)
         return
 
+    # 🔄 2FA REFRESH BUTTON HANDLER (UPDATED LAYOUT)
     elif call.data.startswith("refresh_2fa_"):
         secret = call.data.replace("refresh_2fa_", "")
         code = get_totp_token(secret)
@@ -357,15 +337,15 @@ def handle_query(call):
             new_text = (
                 "🔐 **Live 2FA Generator**\n"
                 "━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🔹 **Code:** `{code}` *(Tap code to copy)*\n"
+                "👇 **Tap the code below to copy:**\n\n"
+                f"`{code}`\n\n"
                 f"🔑 **Secret:** `{secret}`\n\n"
-                f"*(Refreshed at {datetime.now().strftime('%I:%M:%S %p')})*\n"
-                "💡 *Note: Tap the 6-digit code above to copy it instantly!*"
+                f"*(Refreshed at {datetime.now().strftime('%I:%M:%S %p')})*"
             )
             try:
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text, parse_mode="Markdown", reply_markup=markup)
             except: pass
-            bot.answer_callback_query(call.id, f"✅ Refreshed Code: {code} (Tap code to copy)")
+            bot.answer_callback_query(call.id, "✅ Code Refreshed!", show_alert=False)
         else:
             bot.answer_callback_query(call.id, "❌ Error generating 2FA code!", show_alert=True)
         return
@@ -662,35 +642,11 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
             
             api_key = get_user_settings(chat_id)["api_key"]
-            headers = {"api_key": api_key} if api_key else {}
 
-            # Gmail stock check (using official /v1/stock endpoint with service=facebook)
-            gmail_stock = "0"
-            try:
-                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "facebook"}, headers=headers, timeout=10)
-                data = r.json()
-                if "stock" in data: gmail_stock = str(data["stock"])
-            except:
-                try:
-                    r = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=5)
-                    gmail_stock = parse_stock(r.json())
-                except: gmail_stock = "0"
-
-            # Hotmail Trust stock check (using official /v1/stock endpoint with service=hotmailtrust)
-            hotmail_stock = "0"
-            try:
-                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "hotmailtrust"}, headers=headers, timeout=10)
-                data = r.json()
-                if "stock" in data: hotmail_stock = str(data["stock"])
-            except: hotmail_stock = "0"
-
-            # Outlook Trust stock check (using official /v1/stock endpoint with service=outlooktrust)
-            outlook_stock = "0"
-            try:
-                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "outlooktrust"}, headers=headers, timeout=10)
-                data = r.json()
-                if "stock" in data: outlook_stock = str(data["stock"])
-            except: outlook_stock = "0"
+            # Official API stock checks using /v1/stock endpoint
+            gmail_stock = get_service_stock(api_key, "facebook")
+            hotmail_stock = get_service_stock(api_key, "hotmailtrust")
+            outlook_stock = get_service_stock(api_key, "outlooktrust")
 
             balance = "⚠️ API Key not set"
             if api_key:
@@ -1204,6 +1160,7 @@ def handle_document(message):
 # ==========================================
 # 💬 GLOBAL TEXT LISTENER (AUTO-DETECT ALIAS NAME)
 # ==========================================
+# 🔄 INITIAL 2FA GENERATOR TEXT HANDLER (UPDATED LAYOUT)
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith('/'))
 def process_text_messages(message):
     chat_id, text = message.chat.id, message.text.strip()
@@ -1286,7 +1243,14 @@ def process_text_messages(message):
             markup = types.InlineKeyboardMarkup(row_width=1)
             markup.add(types.InlineKeyboardButton("🔄 Refresh Code", callback_data=f"refresh_2fa_{text}"))
             markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}` *(Tap code to copy)*\n🔑 **Secret:** `{text}`\n\n*(Click Refresh Code below for latest 2FA)*\n💡 *Note: Tap the 6-digit code above to copy it instantly!*", parse_mode="Markdown", reply_markup=markup)
+            msg_text = (
+                "🔐 **Live 2FA Generator**\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                "👇 **Tap the code below to copy:**\n\n"
+                f"`{code}`\n\n"
+                f"🔑 **Secret:** `{text}`\n"
+            )
+            msg = bot.send_message(chat_id, msg_text, parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, msg.message_id)
         else:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
