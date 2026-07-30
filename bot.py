@@ -661,32 +661,38 @@ def handle_query(call):
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
             
-            # Gmail stock check
+            api_key = get_user_settings(chat_id)["api_key"]
+            headers = {"api_key": api_key} if api_key else {}
+
+            # Gmail stock check (using official /v1/stock endpoint with service=facebook)
             gmail_stock = "0"
             try:
-                r = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10)
-                try: gmail_stock = parse_stock(r.json())
-                except: gmail_stock = parse_stock(r.text.strip())
-            except: gmail_stock = "0"
+                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "facebook"}, headers=headers, timeout=10)
+                data = r.json()
+                if "stock" in data: gmail_stock = str(data["stock"])
+            except:
+                try:
+                    r = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=5)
+                    gmail_stock = parse_stock(r.json())
+                except: gmail_stock = "0"
 
-            # Hotmail Trust stock check
+            # Hotmail Trust stock check (using official /v1/stock endpoint with service=hotmailtrust)
             hotmail_stock = "0"
             try:
-                r = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10)
-                try: hotmail_stock = parse_stock(r.json())
-                except: hotmail_stock = parse_stock(r.text.strip())
+                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "hotmailtrust"}, headers=headers, timeout=10)
+                data = r.json()
+                if "stock" in data: hotmail_stock = str(data["stock"])
             except: hotmail_stock = "0"
 
-            # Outlook Trust stock check
+            # Outlook Trust stock check (using official /v1/stock endpoint with service=outlooktrust)
             outlook_stock = "0"
             try:
-                r = requests.get("https://outlook.yshshopmails.com/v1/api/stock", timeout=10)
-                try: outlook_stock = parse_stock(r.json())
-                except: outlook_stock = parse_stock(r.text.strip())
+                r = requests.get("https://yshshopmails.com/v1/stock", params={"service": "outlooktrust"}, headers=headers, timeout=10)
+                data = r.json()
+                if "stock" in data: outlook_stock = str(data["stock"])
             except: outlook_stock = "0"
 
             balance = "⚠️ API Key not set"
-            api_key = get_user_settings(chat_id)["api_key"]
             if api_key:
                 try:
                     bal_resp = requests.get("https://yshshopmails.com/v1/api/user", headers={"api_key": api_key}, timeout=5).json()
