@@ -790,6 +790,8 @@ def handle_query(call):
 def process_base_email_step(message, edit_msg_id):
     chat_id = message.chat.id
     text = message.text.strip()
+    track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
     if "|" not in text or "@" not in text:
@@ -808,6 +810,8 @@ def process_base_email_step(message, edit_msg_id):
 def process_hotmail_bulk_step(message, edit_msg_id):
     chat_id = message.chat.id
     text = message.text.strip()
+    track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
     if not text.isdigit():
@@ -891,6 +895,8 @@ def process_ban_step(message, edit_msg_id):
     chat_id = message.chat.id
     if chat_id != ADMIN_ID: return
     target_input = message.text.strip()
+    track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
     user_to_ban = None
     try:
@@ -920,6 +926,8 @@ def process_unban_step(message, edit_msg_id):
     chat_id = message.chat.id
     if chat_id != ADMIN_ID: return
     target_input = message.text.strip()
+    track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
     user_to_unban = None
     try:
@@ -944,6 +952,7 @@ def process_unban_step(message, edit_msg_id):
 def process_api_key_step(message, edit_msg_id):
     chat_id, api_key = message.chat.id, message.text.strip()
     track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
     if verify_yshshop_api(api_key):
         set_user_api_key(chat_id, api_key)
@@ -961,6 +970,7 @@ def handle_document(message):
     chat_id = message.chat.id
     save_user_info(chat_id, message.from_user.username)
     track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     
     if is_user_banned(chat_id):
         msg = bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
@@ -1009,9 +1019,9 @@ def process_text_messages(message):
     chat_id, text = message.chat.id, message.text.strip()
     save_user_info(chat_id, message.from_user.username)
     track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
     
     if is_user_banned(chat_id):
-        clear_chat_history(chat_id)
         msg = bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown", disable_web_page_preview=True)
         track_message(chat_id, msg.message_id)
         return
