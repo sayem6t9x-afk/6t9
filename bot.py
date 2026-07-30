@@ -266,7 +266,7 @@ def send_welcome(message):
 
 def show_main_instruction(chat_id, message_id=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"), types.InlineKeyboardButton("🔥 Buy Hotmail", callback_data="action_buy_hotmail_menu"))
+    markup.add(types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"), types.InlineKeyboardButton("🔥 Buy Trust Mail", callback_data="action_buy_hotmail_menu"))
     markup.add(types.InlineKeyboardButton("🛠️ Zoho/Yandex Alias", callback_data="action_alias_maker"), types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock"))
     markup.add(types.InlineKeyboardButton("📁 My Bulk Accounts", callback_data="action_bulk_list"), types.InlineKeyboardButton("📜 Buy History", callback_data="action_buy_history"))
     markup.add(types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"), types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings"))
@@ -280,7 +280,7 @@ def show_main_instruction(chat_id, message_id=None):
         "**Manual Input Format:**\n"
         "🏢 **Zoho/Yandex:** `email|AppPassword`\n"
         "🔴 **Gmail:** `email@gmail.com|OrderID`\n"
-        "🔥 **Hotmail:** `email|password|token|client_id`\n"
+        "🔥 **Hotmail/Outlook Trust:** `email|password|token|client_id`\n"
         "🔐 **2FA Code:** Send `Secret Key` (e.g. JBSWY3DPEHPK3PXP)"
     )
     
@@ -324,14 +324,15 @@ def handle_query(call):
             new_text = (
                 "🔐 **Live 2FA Generator**\n"
                 "━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🔹 **Code:** `{code}`\n"
+                f"🔹 **Code:** `{code}` *(Tap code to copy)*\n"
                 f"🔑 **Secret:** `{secret}`\n\n"
-                f"*(Refreshed at {datetime.now().strftime('%I:%M:%S %p')})*"
+                f"*(Refreshed at {datetime.now().strftime('%I:%M:%S %p')})*\n"
+                "💡 *Note: Tap the 6-digit code above to copy it instantly!*"
             )
             try:
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text, parse_mode="Markdown", reply_markup=markup)
             except: pass
-            bot.answer_callback_query(call.id, f"✅ Refreshed Code: {code}")
+            bot.answer_callback_query(call.id, f"✅ Refreshed Code: {code} (Tap code to copy)")
         else:
             bot.answer_callback_query(call.id, "❌ Error generating 2FA code!", show_alert=True)
         return
@@ -626,15 +627,30 @@ def handle_query(call):
     elif call.data == "action_check_stock":
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
+            
+            # Gmail stock check
             try:
                 stock_resp = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10).json()
-                gmail_stock = stock_resp.get("stock", stock_resp.get("count", stock_resp.get("data", "Available"))) if isinstance(stock_resp, dict) else str(stock_resp)
-            except: gmail_stock = "Live"
+                gmail_stock = stock_resp.get("stock", stock_resp.get("count", stock_resp.get("data", "0"))) if isinstance(stock_resp, dict) else str(stock_resp)
+            except: gmail_stock = "0"
 
+            # Hotmail Trust stock check (Dedicated Endpoint)
+            hotmail_stock = "0"
             try:
-                hm_stock_resp = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10).json()
-                hotmail_stock = hm_stock_resp.get("stock", hm_stock_resp.get("count", hm_stock_resp.get("data", "Available"))) if isinstance(hm_stock_resp, dict) else str(hm_stock_resp)
-            except: hotmail_stock = "Live"
+                hm_resp = requests.get("https://api-tools.yshshopmails.shop/api/v1/public/outlook/stock", timeout=10).json()
+                if isinstance(hm_resp, dict):
+                    hotmail_stock = hm_resp.get("stock", hm_resp.get("count", hm_resp.get("data", hm_resp.get("hotmail", "0"))))
+                else: hotmail_stock = str(hm_resp)
+            except: hotmail_stock = "0"
+
+            # Outlook Trust stock check (Dedicated Endpoint)
+            outlook_stock = "0"
+            try:
+                out_resp = requests.get("https://outlook.yshshopmails.com/v1/api/stock", timeout=10).json()
+                if isinstance(out_resp, dict):
+                    outlook_stock = out_resp.get("stock", out_resp.get("count", out_resp.get("data", out_resp.get("outlook", "0"))))
+                else: outlook_stock = str(out_resp)
+            except: outlook_stock = "0"
 
             balance = "⚠️ API Key not set"
             api_key = get_user_settings(chat_id)["api_key"]
@@ -654,15 +670,16 @@ def handle_query(call):
                 "📊 **Server Stock Dashboard**\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 f"📦 **Gmail Stock:** `{gmail_stock}` pcs\n"
-                f"🔥 **Hotmail/Outlook Stock:** `{hotmail_stock}` pcs\n"
+                f"🔥 **Hotmail Trust Stock:** `{hotmail_stock}` pcs\n"
+                f"🌐 **Outlook Trust Stock:** `{outlook_stock}` pcs\n"
                 f"💳 **Your Balance:** `{balance}`\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
                 f"📁 **Your Cloud TXT Stock:** `{local_stock}` accounts."
             )
-            markup = types.InlineKeyboardMarkup()
-            markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"))
-            markup.row(types.InlineKeyboardButton("🔥 Buy Hotmail", callback_data="action_buy_hotmail_menu"))
-            markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"))
+            markup.add(types.InlineKeyboardButton("🔥 Buy Trust Mail", callback_data="action_buy_hotmail_menu"))
+            markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=dashboard_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -677,23 +694,49 @@ def handle_query(call):
     elif call.data == "action_buy_hotmail_menu":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("🔥 Buy Hotmail Trust (Single/Bulk)", callback_data="buy_hm_trust_menu"))
+        markup.add(types.InlineKeyboardButton("🌐 Buy Outlook Trust (Single/Bulk)", callback_data="buy_out_trust_menu"))
+        markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Trust Mail Purchase Menu**\n\nSelect which trust mail you want to buy:", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "buy_hm_trust_menu":
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(types.InlineKeyboardButton("👤 Single Buy", callback_data="buy_hm_single"), types.InlineKeyboardButton("📦 Bulk Buy", callback_data="buy_hm_bulk"))
-        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Hotmail / Outlook Trust Purchase Mode**\n\nChoose how you want to buy:", parse_mode="Markdown", reply_markup=markup)
+        markup.row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_hotmail_menu"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Hotmail Trust Purchase Mode**\n\nChoose how you want to buy:", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "buy_out_trust_menu":
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(types.InlineKeyboardButton("👤 Single Buy", callback_data="buy_out_single"), types.InlineKeyboardButton("📦 Bulk Buy", callback_data="buy_out_bulk"))
+        markup.row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_hotmail_menu"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🌐 **Outlook Trust Purchase Mode**\n\nChoose how you want to buy:", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "buy_hm_single":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_hotmail"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Single Checkout (Hotmail/Outlook)**\n\nAre you sure you want to buy 1 account?", parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🔥 **Single Checkout (Hotmail Trust)**\n\nAre you sure you want to buy 1 Hotmail Trust account?", parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "buy_hm_bulk":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        msg = bot.send_message(chat_id, "👇 **How many Hotmail accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "👇 **How many Hotmail Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_hotmail_bulk_step, msg.message_id)
+
+    elif call.data == "buy_out_single":
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy_outlook"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🌐 **Single Checkout (Outlook Trust)**\n\nAre you sure you want to buy 1 Outlook Trust account?", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "buy_out_bulk":
+        if not get_user_settings(chat_id)["api_key"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
+        msg = bot.send_message(chat_id, "👇 **How many Outlook Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
+        track_message(chat_id, msg.message_id)
+        bot.register_next_step_handler(msg, process_outlook_bulk_step, msg.message_id)
 
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
@@ -742,32 +785,20 @@ def handle_query(call):
     elif call.data == "confirm_buy_hotmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail**", parse_mode="Markdown")
-            hotmail_urls = [
-                f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}",
-                f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
-                f"https://yshshopmails.com/v1/api/outlook/create-order.php?key={api_key}"
-            ]
-            resp, raw_resp = None, None
-            for url in hotmail_urls:
-                try:
-                    raw_resp = requests.get(url, timeout=10)
-                    data = raw_resp.json()
-                    if isinstance(data, dict) and data.get("status") == "error": continue
-                    resp = data
-                    break
-                except: continue
-            
-            if not resp and raw_resp:
-                try: resp = raw_resp.json()
-                except: resp = {"mail": raw_resp.text.strip()}
-            elif not resp: resp = {"error": "Hotmail order failed"}
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail Trust**", parse_mode="Markdown")
+            # Dedicated Hotmail Trust Buy API
+            url = f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}"
+            try:
+                raw_resp = requests.get(url, timeout=10)
+                resp = raw_resp.json()
+            except:
+                resp = {"mail": raw_resp.text.strip()} if 'raw_resp' in locals() else {"error": "Failed"}
 
             eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
             pwd = resp.get("password") or resp.get("pwd") or ""
             token = resp.get("token") or resp.get("refresh_token") or ""
             client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "HOTMAIL_ORDER"
+            ord_id = resp.get("order_id") or "HOTMAIL_TRUST_ORDER"
             
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
@@ -779,12 +810,50 @@ def handle_query(call):
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
                 markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Hotmail Buy Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Hotmail Trust Buy Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "confirm_buy_outlook":
+        api_key = get_user_settings(chat_id)["api_key"]
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Outlook Trust**", parse_mode="Markdown")
+            # Dedicated Outlook Trust Buy API
+            url = f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}"
+            try:
+                raw_resp = requests.get(url, timeout=10)
+                resp = raw_resp.json()
+            except:
+                resp = {"mail": raw_resp.text.strip()} if 'raw_resp' in locals() else {"error": "Failed"}
+
+            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
+            pwd = resp.get("password") or resp.get("pwd") or ""
+            token = resp.get("token") or resp.get("refresh_token") or ""
+            client_id = resp.get("client_id") or ""
+            ord_id = resp.get("order_id") or "OUTLOOK_TRUST_ORDER"
+            
+            if eml and "@" in str(eml):
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
+                        if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, 'hotmail', token, client_id, chat_id))
+                        else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
+                        
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                    conn.commit()
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Outlook Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
+                time.sleep(1.5)
+                fetch_and_send_emails(chat_id, edit_message_id=message_id)
+            else:
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Outlook Trust Buy Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
@@ -853,36 +922,25 @@ def process_hotmail_bulk_step(message, edit_msg_id):
         track_message(chat_id, msg.message_id)
         return
 
-    status_msg = bot.send_message(chat_id, f"⏳ **Working... Purchasing {qty} Hotmail accounts. Please wait...**", parse_mode="Markdown")
+    status_msg = bot.send_message(chat_id, f"⏳ **Working... Purchasing {qty} Hotmail Trust accounts. Please wait...**", parse_mode="Markdown")
     track_message(chat_id, status_msg.message_id)
 
     success_accounts = []
-    hotmail_urls = [
-        f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}",
-        f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
-        f"https://yshshopmails.com/v1/api/outlook/create-order.php?key={api_key}"
-    ]
+    url = f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}"
 
     for _ in range(qty):
-        resp = None
-        for url in hotmail_urls:
-            try:
-                raw_resp = requests.get(url, timeout=10)
-                data = raw_resp.json()
-                if isinstance(data, dict) and data.get("status") == "error": continue
-                resp = data
-                break
-            except: continue
-
-        if resp and isinstance(resp, dict):
+        try:
+            raw_resp = requests.get(url, timeout=10)
+            resp = raw_resp.json()
             eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
             pwd = resp.get("password") or resp.get("pwd") or ""
             token = resp.get("token") or resp.get("refresh_token") or ""
             client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "HOTMAIL_BULK"
+            ord_id = resp.get("order_id") or "HOTMAIL_TRUST_BULK"
 
             if eml and "@" in str(eml):
                 success_accounts.append((eml, pwd, token, client_id, ord_id))
+        except: continue
 
     if not success_accounts:
         try: bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="❌ **Bulk Buy Failed!** Could not fetch accounts from server.", parse_mode="Markdown", reply_markup=markup)
@@ -900,7 +958,7 @@ def process_hotmail_bulk_step(message, edit_msg_id):
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
         return
 
-    filename = f"Hotmail_Bulk_{chat_id}.txt"
+    filename = f"Hotmail_Trust_Bulk_{chat_id}.txt"
     with open(filename, "w", encoding="utf-8") as f:
         for eml, pwd, token, client_id, _ in success_accounts:
             f.write(f"{eml}|{pwd}|{token}|{client_id}\n")
@@ -909,7 +967,80 @@ def process_hotmail_bulk_step(message, edit_msg_id):
     except: pass
 
     with open(filename, "rb") as f:
-        doc_msg = bot.send_document(chat_id, f, caption=f"🎉 **Bulk Purchase Successful!**\n📦 Total Bought: `{len(success_accounts)}` Hotmail Accounts\n\n*(Also added to your Cloud Bulk List & Purchase History)*", parse_mode="Markdown", reply_markup=markup)
+        doc_msg = bot.send_document(chat_id, f, caption=f"🎉 **Hotmail Trust Bulk Purchase Successful!**\n📦 Total Bought: `{len(success_accounts)}` Accounts\n\n*(Also added to your Cloud Bulk List & Purchase History)*", parse_mode="Markdown", reply_markup=markup)
+        track_message(chat_id, doc_msg.message_id)
+    os.remove(filename)
+
+def process_outlook_bulk_step(message, edit_msg_id):
+    chat_id = message.chat.id
+    text = message.text.strip()
+    track_message(chat_id, message.message_id)
+    clear_chat_history(chat_id)
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+
+    if not text.isdigit():
+        msg = bot.send_message(chat_id, "❌ **Invalid Number!** Please send a valid digit (e.g., 5).", parse_mode="Markdown", reply_markup=markup)
+        track_message(chat_id, msg.message_id)
+        return
+
+    qty = int(text)
+    if qty < 1 or qty > 50:
+        msg = bot.send_message(chat_id, "❌ **Limit Exceeded!** You can buy between 1 and 50 accounts at once.", parse_mode="Markdown", reply_markup=markup)
+        track_message(chat_id, msg.message_id)
+        return
+
+    api_key = get_user_settings(chat_id)["api_key"]
+    if not api_key:
+        msg = bot.send_message(chat_id, "❌ **API Key Missing!** Set it in Settings first.", parse_mode="Markdown", reply_markup=markup)
+        track_message(chat_id, msg.message_id)
+        return
+
+    status_msg = bot.send_message(chat_id, f"⏳ **Working... Purchasing {qty} Outlook Trust accounts. Please wait...**", parse_mode="Markdown")
+    track_message(chat_id, status_msg.message_id)
+
+    success_accounts = []
+    url = f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}"
+
+    for _ in range(qty):
+        try:
+            raw_resp = requests.get(url, timeout=10)
+            resp = raw_resp.json()
+            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
+            pwd = resp.get("password") or resp.get("pwd") or ""
+            token = resp.get("token") or resp.get("refresh_token") or ""
+            client_id = resp.get("client_id") or ""
+            ord_id = resp.get("order_id") or "OUTLOOK_TRUST_BULK"
+
+            if eml and "@" in str(eml):
+                success_accounts.append((eml, pwd, token, client_id, ord_id))
+        except: continue
+
+    if not success_accounts:
+        try: bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="❌ **Bulk Buy Failed!** Could not fetch accounts from server.", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+        return
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                for eml, pwd, token, client_id, ord_id in success_accounts:
+                    cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+            conn.commit()
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
+        return
+
+    filename = f"Outlook_Trust_Bulk_{chat_id}.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        for eml, pwd, token, client_id, _ in success_accounts:
+            f.write(f"{eml}|{pwd}|{token}|{client_id}\n")
+
+    try: bot.delete_message(chat_id, status_msg.message_id)
+    except: pass
+
+    with open(filename, "rb") as f:
+        doc_msg = bot.send_document(chat_id, f, caption=f"🎉 **Outlook Trust Bulk Purchase Successful!**\n📦 Total Bought: `{len(success_accounts)}` Accounts\n\n*(Also added to your Cloud Bulk List & Purchase History)*", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, doc_msg.message_id)
     os.remove(filename)
 
@@ -1118,7 +1249,7 @@ def process_text_messages(message):
             markup = types.InlineKeyboardMarkup(row_width=1)
             markup.add(types.InlineKeyboardButton("🔄 Refresh Code", callback_data=f"refresh_2fa_{text}"))
             markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}`\n🔑 **Secret:** `{text}`\n\n*(Click Refresh Code below for latest 2FA)*", parse_mode="Markdown", reply_markup=markup)
+            msg = bot.send_message(chat_id, f"🔐 **Live 2FA Generator**\n━━━━━━━━━━━━━━━━━━━\n\n🔹 **Code:** `{code}` *(Tap code to copy)*\n🔑 **Secret:** `{text}`\n\n*(Click Refresh Code below for latest 2FA)*\n💡 *Note: Tap the 6-digit code above to copy it instantly!*", parse_mode="Markdown", reply_markup=markup)
             track_message(chat_id, msg.message_id)
         else:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
@@ -1309,7 +1440,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
 # 🚀 MAIN EXECUTION (Render Ready)
 # ==========================================
 def start_bot():
-    while True:
+    while type(True) is bool:
         try:
             bot.remove_webhook()
             bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
