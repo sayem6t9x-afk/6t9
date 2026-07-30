@@ -331,7 +331,7 @@ def handle_query(call):
         except: pass
 
     elif call.data == "action_set_base_email":
-        msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|YourAppPassword` or `example@yandex.com|YourAppPassword`)", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|AppPassword` or `example@yandex.com|AppPassword`)", parse_mode="Markdown")
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_base_email_step, msg.message_id)
 
@@ -385,7 +385,6 @@ def handle_query(call):
         clean_name = re.sub(r'\s+', '', name_input).lower()
         user_part, domain_part = base_eml.split('@') if '@' in base_eml else ("example", "zohomail.com")
         
-        # Smart domain detection: Generate ONLY the corresponding domain alias
         if "yandex" in domain_part.lower():
             target_alias = f"{user_part}+{clean_name}@yandex.com"
             provider = "yandex"
@@ -393,7 +392,6 @@ def handle_query(call):
             target_alias = f"{user_part}+{clean_name}@zohomail.com"
             provider = "zoho"
 
-        # Save to alias_history automatically with base password
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -795,7 +793,7 @@ def process_base_email_step(message, edit_msg_id):
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
 
     if "|" not in text or "@" not in text:
-        msg = bot.send_message(chat_id, "❌ **Invalid Format!** Please send using `email|AppPassword` format (e.g., `example@zohomail.com|YourAppPassword`).", parse_mode="Markdown", reply_markup=markup)
+        msg = bot.send_message(chat_id, "❌ **Invalid Format!** Please send using `email|AppPassword` format (e.g., `example@zohomail.com|AppPassword`).", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         return
 
@@ -1020,7 +1018,6 @@ def process_text_messages(message):
 
     settings = get_user_settings(chat_id)
     
-    # Auto-detect if user sent a name for alias generation
     if settings["base_email"] and (" " in text or len(text.split()) > 0) and "@" not in text and "|" not in text and len(text) < 40 and not re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
         set_temp_data(chat_id, None, None, text)
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1199,7 +1196,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                                 if isinstance(subject, bytes): subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
                                 from_ = msg.get("From", "Unknown")
                                 
-                                # STRICT FILTER: ONLY Facebook OTP accepted
                                 fb_code = detect_facebook_otp(subject, clean_html_tags(raw_html))
                                 if fb_code: 
                                     cached_emails.append((subject, from_, raw_html))
@@ -1226,7 +1222,6 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                             if msg_to and target_eml_lower not in msg_to: continue
                             raw_body, subject, from_sender = msg.get("message", "No Content"), msg.get("subject", "No Subject"), msg.get("from", "Outlook System")
                             
-                            # STRICT FILTER: ONLY Facebook OTP accepted
                             fb_code = detect_facebook_otp(subject, clean_html_tags(raw_body))
                             if fb_code:
                                 cached_emails.append((subject, from_sender, raw_body))
@@ -1291,9 +1286,7 @@ def start_bot():
 if __name__ == "__main__":
     init_db()  # First, initialize the database
     
-    # Run the Telegram Bot in a separate background thread with auto-reconnect loop
     bot_thread = threading.Thread(target=start_bot, daemon=True)
     bot_thread.start()
     
-    # Start the Flask Web Service on the main thread (required by Render)
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
