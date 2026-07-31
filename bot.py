@@ -78,7 +78,7 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS email_cache (user_id BIGINT, idx INTEGER, subject TEXT, sender TEXT, full_content TEXT, PRIMARY KEY (user_id, idx))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (user_id BIGINT PRIMARY KEY, api_key TEXT, base_email TEXT, base_password TEXT, temp_alias TEXT, temp_provider TEXT, temp_name TEXT, username TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS bulk_accounts (id SERIAL, owner_id BIGINT, email TEXT PRIMARY KEY, password TEXT, provider TEXT, refresh_token TEXT, client_id TEXT)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id BIGINT, email TEXT, order_id TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS purchase_history (owner_id BIGINT, email TEXT, order_id TEXT, provider TEXT, purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS alias_history (id SERIAL PRIMARY KEY, owner_id BIGINT, email TEXT, password TEXT, provider TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS banned_users (user_id BIGINT PRIMARY KEY)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)''')
@@ -96,6 +96,8 @@ def init_db():
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN temp_provider TEXT")
         except psycopg2.Error: pass
         try: cursor.execute("ALTER TABLE user_settings ADD COLUMN temp_name TEXT")
+        except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE purchase_history ADD COLUMN provider TEXT")
         except psycopg2.Error: pass
         
         try: cursor.execute("DELETE FROM banned_users WHERE user_id=%s", (ADMIN_ID,))
@@ -242,64 +244,57 @@ def get_service_stock(api_key, service_name):
         pass
     return "0"
 
-# 🔄 NEW UNIVERSAL PURCHASE API HANDLER (FIXES 404 ERRORS)
 def call_buy_api(api_key, service):
-    urls = [
-        f"https://yshshopmails.com/v1/order?service={service}&key={api_key}",
-        f"https://yshshopmails.com/v1/api/order?service={service}&key={api_key}",
-        f"https://yshshopmails.com/api/v1/order?service={service}&key={api_key}"
-    ]
-    # Keep old URLs as worst-case fallbacks
     if service == "facebook":
-        urls.extend([f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}", f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}"])
-    elif service == "hotmailtrust":
-        urls.append(f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}")
-    elif service == "outlooktrust":
-        urls.append(f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}")
-        
-    last_resp = {"error": "All API endpoints failed or returned 404."}
-    headers = {"api_key": api_key}
-    
-    for url in urls:
+        url = f"https://yshshopmails.com/v1/api/create-order.php?key={api_key}&service=facebook"
         try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 404: 
-                continue # Skip dead subdomains
-            try: 
-                data = r.json()
-                last_resp = data
-                
-                # Dig into nested data if present
-                acc_data = data.get("data") if isinstance(data.get("data"), dict) else data
-                eml = acc_data.get("mail") or acc_data.get("email") or acc_data.get("account")
-                
-                # Check direct string data formatting
-                if not eml and isinstance(data.get("data"), str) and "@" in data.get("data"):
-                    eml = data.get("data")
-                    
-                if eml and "@" in str(eml):
-                    return data # Found working URL and valid account!
-                elif data.get("status") == "error":
-                    return data # Returning intentional error from API (e.g., Insufficient balance)
-            except:
-                last_resp = {"error": f"Invalid Server Response: {r.text[:30]}"}
+            r = requests.get(url, timeout=10).json()
+            return r
         except Exception as e:
-            last_resp = {"error": str(e)}
-    return last_resp
+            return {"error": f"Gmail API Error: {str(e)}"}
+            
+    else:
+        mapped_service = "hotmailnew" if service == "hotmailtrust" else "outlooknew" if service == "outlooktrust" else service
+        step1_url = f"https://yshshopmails.com/v2/api/pre-order.php?key={api_key}&service={mapped_service}"
+        try:
+            r1 = requests.get(step1_url, timeout=10).json()
+            if r1.get("status") in ["error", "fail", False] or "error" in r1:
+                return r1
+            
+            order_url = r1.get("url")
+            if not order_url:
+                return {"error": f"Step 1 Failed. No Load Order URL provided: {r1}"}
+            
+            if "fetch=" not in order_url:
+                order_url += "&fetch=true"
+                
+            r2 = requests.get(order_url, timeout=15).json()
+            return r2
+            
+        except Exception as e:
+            return {"error": f"V2 Trust Mail API Error: {str(e)}"}
 
 def extract_account_details(resp, default_order):
     if not isinstance(resp, dict): return None, "", "", "", default_order
     
     acc_data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
-    
-    eml = acc_data.get("mail") or acc_data.get("email") or acc_data.get("account")
-    if not eml and isinstance(resp.get("data"), str) and "@" in resp.get("data"):
-        eml = resp.get("data")
+    raw_acc = acc_data.get("mail") or acc_data.get("email") or acc_data.get("account")
+    if not raw_acc and isinstance(resp.get("data"), str) and "@" in resp.get("data"):
+        raw_acc = resp.get("data")
         
-    pwd = acc_data.get("password") or acc_data.get("pwd") or ""
-    token = acc_data.get("token") or acc_data.get("refresh_token") or ""
-    client_id = acc_data.get("client_id") or ""
+    eml, pwd, token, client_id = "", "", "", ""
     ord_id = resp.get("order_id") or resp.get("id") or default_order
+    
+    if raw_acc and isinstance(raw_acc, str) and "@" in raw_acc:
+        parts = raw_acc.split("|")
+        eml = parts[0].strip()
+        if len(parts) > 1: pwd = parts[1].strip()
+        if len(parts) > 2: token = parts[2].strip()
+        if len(parts) > 3: client_id = parts[3].strip()
+    
+    if not pwd: pwd = acc_data.get("password") or acc_data.get("pwd") or ""
+    if not token: token = acc_data.get("token") or acc_data.get("refresh_token") or ""
+    if not client_id: client_id = acc_data.get("client_id") or ""
     
     return eml, pwd, token, client_id, ord_id
 
@@ -341,7 +336,7 @@ def show_main_instruction(chat_id, message_id=None):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"), types.InlineKeyboardButton("🔥 Buy Trust Mail", callback_data="action_buy_hotmail_menu"))
     markup.add(types.InlineKeyboardButton("🛠️ Zoho/Yandex Alias", callback_data="action_alias_maker"), types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock"))
-    markup.add(types.InlineKeyboardButton("📁 My Bulk Accounts", callback_data="action_bulk_list"), types.InlineKeyboardButton("📜 Buy History", callback_data="action_buy_history"))
+    markup.add(types.InlineKeyboardButton("📁 My Bulk Accounts", callback_data="action_bulk_list"), types.InlineKeyboardButton("📜 History Center", callback_data="action_buy_history"))
     markup.add(types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"), types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings"))
     if chat_id == ADMIN_ID: markup.add(types.InlineKeyboardButton("👨‍💻 Admin Panel (Boss Only)", callback_data="action_admin_panel"))
     
@@ -421,7 +416,7 @@ def handle_query(call):
             "👇 **Options below:**"
         )
         markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email & Pass", callback_data="action_set_base_email"), types.InlineKeyboardButton("📜 Created Aliases History", callback_data="action_alias_history"))
+        markup.add(types.InlineKeyboardButton("⚙️ Set Base Email & Pass", callback_data="action_set_base_email"), types.InlineKeyboardButton("📜 Created Aliases History", callback_data="hist_alias"))
         markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=alias_text, parse_mode="Markdown", reply_markup=markup)
         except: pass
@@ -430,23 +425,6 @@ def handle_query(call):
         msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|AppPassword` or `example@yandex.com|AppPassword`)", parse_mode="Markdown")
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_base_email_step, msg.message_id)
-
-    elif call.data == "action_alias_history":
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT id, email, password, provider, created_at FROM alias_history WHERE owner_id=%s ORDER BY created_at DESC LIMIT 20", (chat_id,))
-                    rows = cursor.fetchall()
-            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your alias history is empty.", show_alert=True)
-            
-            history_text = "📜 **Your Created Alias Mails History**\n━━━━━━━━━━━━━━━━━━━\n\nTap any email below to check inbox for Facebook OTP:\n"
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            for r_id, eml, pwd, prov, date_str in rows:
-                markup.add(types.InlineKeyboardButton(f"📥 {eml} ({prov.upper()})", callback_data=f"chk_alias_{r_id}"))
-            markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
-        except Exception as e:
-            bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
     elif call.data.startswith("chk_alias_"):
         r_id = call.data.split("_")[2]
@@ -626,17 +604,71 @@ def handle_query(call):
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_api_key_step, msg.message_id)
 
+    # 📜 PRO HISTORY SUB-MENU SYSTEM
     elif call.data == "action_buy_history":
+        menu_text = (
+            "📜 **Account & Purchase History Center**\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please select which history record you want to view:"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("🔴 Gmail Buy History", callback_data="hist_gmail"),
+            types.InlineKeyboardButton("🔥 Hotmail / Outlook Trust History", callback_data="hist_trust"),
+            types.InlineKeyboardButton("🛠️ Zoho / Yandex Alias History", callback_data="hist_alias")
+        )
+        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=menu_text, parse_mode="Markdown", reply_markup=markup)
+        except: pass
+
+    elif call.data == "hist_gmail":
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, order_id, purchased_at FROM purchase_history WHERE owner_id=%s ORDER BY purchased_at DESC LIMIT 15", (chat_id,))
+                    cursor.execute("SELECT email, order_id, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider='gmail' OR email LIKE '%%@gmail.com') ORDER BY purchased_at DESC LIMIT 20", (chat_id,))
                     rows = cursor.fetchall()
-            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your purchase history is empty.", show_alert=True)
-            history_text = "📜 **Your Last 15 Purchased Accounts**\n━━━━━━━━━━━━━━━━━━━\n\n"
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Gmail purchase history is empty.", show_alert=True)
+            
+            history_text = "🔴 **Your Purchased Gmail History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\n\n"
             for idx, (eml, ord_id, date_str) in enumerate(rows, 1):
-                history_text += f"**{idx}.** `{eml}|{ord_id}`\n"
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                dt_formatted = date_str.strftime('%d-%b %I:%M %p') if isinstance(date_str, datetime) else str(date_str)[:16]
+                history_text += f"**{idx}.** `{eml}`\n   🆔 Order ID: `{ord_id}` | 🕒 {dt_formatted}\n\n"
+            
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Back to History Menu", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    elif call.data == "hist_trust":
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, order_id, provider, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC LIMIT 20", (chat_id,))
+                    rows = cursor.fetchall()
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Trust Mail purchase history is empty.", show_alert=True)
+            
+            history_text = "🔥 **Your Hotmail/Outlook Trust History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\n\n"
+            for idx, (eml, ord_id, prov, date_str) in enumerate(rows, 1):
+                prov_tag = (prov or "TRUST").upper()
+                dt_formatted = date_str.strftime('%d-%b %I:%M %p') if isinstance(date_str, datetime) else str(date_str)[:16]
+                history_text += f"**{idx}.** [{prov_tag}] `{eml}`\n   🆔 Order: `{ord_id}` | 🕒 {dt_formatted}\n\n"
+            
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Back to History Menu", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    elif call.data == "hist_alias":
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT id, email, password, provider, created_at FROM alias_history WHERE owner_id=%s ORDER BY created_at DESC LIMIT 20", (chat_id,))
+                    rows = cursor.fetchall()
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your alias history is empty.", show_alert=True)
+            
+            history_text = "🛠️ **Your Created Alias History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\nTap any alias below to fetch Facebook OTP instantly:\n\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for r_id, eml, pwd, prov, date_str in rows:
+                markup.add(types.InlineKeyboardButton(f"📥 {eml} ({prov.upper()})", callback_data=f"chk_alias_{r_id}"))
+            markup.row(types.InlineKeyboardButton("⬅️ Back to History Menu", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
@@ -703,10 +735,9 @@ def handle_query(call):
             
             api_key = get_user_settings(chat_id)["api_key"]
 
-            # Official API stock checks using /v1/stock endpoint
             gmail_stock = get_service_stock(api_key, "facebook")
-            hotmail_stock = get_service_stock(api_key, "hotmailtrust")
-            outlook_stock = get_service_stock(api_key, "outlooktrust")
+            hotmail_stock = get_service_stock(api_key, "hotmailnew")
+            outlook_stock = get_service_stock(api_key, "outlooknew")
 
             balance = "⚠️ API Key not set"
             if api_key:
@@ -793,12 +824,17 @@ def handle_query(call):
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_outlook_bulk_step, msg.message_id)
 
-    # 🔄 UPDATED PURCHASE HANDLERS (USING NEW UNIVERSAL API CALL)
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Gmail**", parse_mode="Markdown")
             resp = call_buy_api(api_key, "facebook")
+            
+            if "error" in resp or resp.get("status") in ["error", "fail", False]:
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                err_msg = resp.get("msg") or resp.get("message") or resp.get("error") or str(resp)
+                return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Error:** `{err_msg}`", parse_mode="Markdown", reply_markup=markup)
+
             eml, pwd, token, client_id, ord_id = extract_account_details(resp, "GMAIL_ORDER")
             
             if eml and "@" in str(eml):
@@ -807,7 +843,7 @@ def handle_query(call):
                         cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (chat_id,))
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (eml, ord_id, 'gmail', chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, ord_id, 'gmail'))
-                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'gmail')", (chat_id, eml, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -824,6 +860,12 @@ def handle_query(call):
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail Trust**", parse_mode="Markdown")
             resp = call_buy_api(api_key, "hotmailtrust")
+            
+            if "error" in resp or resp.get("status") in ["error", "fail", False]:
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                err_msg = resp.get("msg") or resp.get("message") or resp.get("error") or str(resp)
+                return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Error:** `{err_msg}`", parse_mode="Markdown", reply_markup=markup)
+
             eml, pwd, token, client_id, ord_id = extract_account_details(resp, "HOTMAIL_TRUST_ORDER")
             
             if eml and "@" in str(eml):
@@ -834,7 +876,7 @@ def handle_query(call):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
                         
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'hotmail')", (chat_id, eml, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -851,6 +893,12 @@ def handle_query(call):
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Outlook Trust**", parse_mode="Markdown")
             resp = call_buy_api(api_key, "outlooktrust")
+            
+            if "error" in resp or resp.get("status") in ["error", "fail", False]:
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                err_msg = resp.get("msg") or resp.get("message") or resp.get("error") or str(resp)
+                return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **API Error:** `{err_msg}`", parse_mode="Markdown", reply_markup=markup)
+
             eml, pwd, token, client_id, ord_id = extract_account_details(resp, "OUTLOOK_TRUST_ORDER")
             
             if eml and "@" in str(eml):
@@ -861,7 +909,7 @@ def handle_query(call):
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
                         
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'outlook')", (chat_id, eml, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Outlook Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -942,7 +990,6 @@ def process_hotmail_bulk_step(message, edit_msg_id):
 
     success_accounts = []
     
-    # 🔄 UPDATED BULK BUY LOOP
     for _ in range(qty):
         resp = call_buy_api(api_key, "hotmailtrust")
         eml, pwd, token, client_id, ord_id = extract_account_details(resp, "HOTMAIL_TRUST_BULK")
@@ -959,7 +1006,7 @@ def process_hotmail_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'hotmail')", (chat_id, eml, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
@@ -1007,7 +1054,6 @@ def process_outlook_bulk_step(message, edit_msg_id):
 
     success_accounts = []
     
-    # 🔄 UPDATED BULK BUY LOOP
     for _ in range(qty):
         resp = call_buy_api(api_key, "outlooktrust")
         eml, pwd, token, client_id, ord_id = extract_account_details(resp, "OUTLOOK_TRUST_BULK")
@@ -1024,7 +1070,7 @@ def process_outlook_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id) VALUES (%s, %s, %s)", (chat_id, eml, str(ord_id)))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'outlook')", (chat_id, eml, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
@@ -1327,6 +1373,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
             else:
                 try:
                     data = requests.get(f"https://yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
+                    
                     if "otp" in data and data["otp"]:
                         otp_found, otp_code = True, data["otp"]
                         subject = f"Facebook OTP: {otp_code}"
