@@ -242,6 +242,67 @@ def get_service_stock(api_key, service_name):
         pass
     return "0"
 
+# 🔄 NEW UNIVERSAL PURCHASE API HANDLER (FIXES 404 ERRORS)
+def call_buy_api(api_key, service):
+    urls = [
+        f"https://yshshopmails.com/v1/order?service={service}&key={api_key}",
+        f"https://yshshopmails.com/v1/api/order?service={service}&key={api_key}",
+        f"https://yshshopmails.com/api/v1/order?service={service}&key={api_key}"
+    ]
+    # Keep old URLs as worst-case fallbacks
+    if service == "facebook":
+        urls.extend([f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}", f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}"])
+    elif service == "hotmailtrust":
+        urls.append(f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}")
+    elif service == "outlooktrust":
+        urls.append(f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}")
+        
+    last_resp = {"error": "All API endpoints failed or returned 404."}
+    headers = {"api_key": api_key}
+    
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 404: 
+                continue # Skip dead subdomains
+            try: 
+                data = r.json()
+                last_resp = data
+                
+                # Dig into nested data if present
+                acc_data = data.get("data") if isinstance(data.get("data"), dict) else data
+                eml = acc_data.get("mail") or acc_data.get("email") or acc_data.get("account")
+                
+                # Check direct string data formatting
+                if not eml and isinstance(data.get("data"), str) and "@" in data.get("data"):
+                    eml = data.get("data")
+                    
+                if eml and "@" in str(eml):
+                    return data # Found working URL and valid account!
+                elif data.get("status") == "error":
+                    return data # Returning intentional error from API (e.g., Insufficient balance)
+            except:
+                last_resp = {"error": f"Invalid Server Response: {r.text[:30]}"}
+        except Exception as e:
+            last_resp = {"error": str(e)}
+    return last_resp
+
+def extract_account_details(resp, default_order):
+    if not isinstance(resp, dict): return None, "", "", "", default_order
+    
+    acc_data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    
+    eml = acc_data.get("mail") or acc_data.get("email") or acc_data.get("account")
+    if not eml and isinstance(resp.get("data"), str) and "@" in resp.get("data"):
+        eml = resp.get("data")
+        
+    pwd = acc_data.get("password") or acc_data.get("pwd") or ""
+    token = acc_data.get("token") or acc_data.get("refresh_token") or ""
+    client_id = acc_data.get("client_id") or ""
+    ord_id = resp.get("order_id") or resp.get("id") or default_order
+    
+    return eml, pwd, token, client_id, ord_id
+
 import hmac
 import base64
 import struct
@@ -326,7 +387,6 @@ def handle_query(call):
         show_main_instruction(chat_id, message_id=message_id)
         return
 
-    # 🔄 2FA REFRESH BUTTON HANDLER (UPDATED LAYOUT)
     elif call.data.startswith("refresh_2fa_"):
         secret = call.data.replace("refresh_2fa_", "")
         code = get_totp_token(secret)
@@ -733,31 +793,13 @@ def handle_query(call):
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_outlook_bulk_step, msg.message_id)
 
+    # 🔄 UPDATED PURCHASE HANDLERS (USING NEW UNIVERSAL API CALL)
     elif call.data == "confirm_buy_gmail":
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Gmail**", parse_mode="Markdown")
-            order_urls = [
-                f"https://facebook.yshshopmails.com/v1/api/create-order.php?key={api_key}",
-                f"https://facebook.yshshopmails.com/v1/api/order?key={api_key}"
-            ]
-            resp, raw_resp = None, None
-            for url in order_urls:
-                try:
-                    raw_resp = requests.get(url, timeout=10)
-                    data = raw_resp.json()
-                    if isinstance(data, dict) and data.get("status") == "error": continue
-                    resp = data
-                    break
-                except: continue
-            
-            if not resp and raw_resp:
-                try: resp = raw_resp.json()
-                except: resp = {"mail": raw_resp.text.strip(), "order_id": "API_ORDER"}
-            elif not resp: resp = {"error": "Order failed"}
-
-            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            ord_id = resp.get("order_id") or resp.get("id") or "AUTO_ORDER"
+            resp = call_buy_api(api_key, "facebook")
+            eml, pwd, token, client_id, ord_id = extract_account_details(resp, "GMAIL_ORDER")
             
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
@@ -772,7 +814,7 @@ def handle_query(call):
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
                 markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Gmail Buy Failed:** `{resp}`", parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
@@ -781,18 +823,8 @@ def handle_query(call):
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Hotmail Trust**", parse_mode="Markdown")
-            url = f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}"
-            try:
-                raw_resp = requests.get(url, timeout=10)
-                resp = raw_resp.json()
-            except:
-                resp = {"mail": raw_resp.text.strip()} if 'raw_resp' in locals() else {"error": "Failed"}
-
-            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            pwd = resp.get("password") or resp.get("pwd") or ""
-            token = resp.get("token") or resp.get("refresh_token") or ""
-            client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "HOTMAIL_TRUST_ORDER"
+            resp = call_buy_api(api_key, "hotmailtrust")
+            eml, pwd, token, client_id, ord_id = extract_account_details(resp, "HOTMAIL_TRUST_ORDER")
             
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
@@ -818,18 +850,8 @@ def handle_query(call):
         api_key = get_user_settings(chat_id)["api_key"]
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Buying Outlook Trust**", parse_mode="Markdown")
-            url = f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}"
-            try:
-                raw_resp = requests.get(url, timeout=10)
-                resp = raw_resp.json()
-            except:
-                resp = {"mail": raw_resp.text.strip()} if 'raw_resp' in locals() else {"error": "Failed"}
-
-            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            pwd = resp.get("password") or resp.get("pwd") or ""
-            token = resp.get("token") or resp.get("refresh_token") or ""
-            client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "OUTLOOK_TRUST_ORDER"
+            resp = call_buy_api(api_key, "outlooktrust")
+            eml, pwd, token, client_id, ord_id = extract_account_details(resp, "OUTLOOK_TRUST_ORDER")
             
             if eml and "@" in str(eml):
                 with get_db_connection() as conn:
@@ -919,21 +941,13 @@ def process_hotmail_bulk_step(message, edit_msg_id):
     track_message(chat_id, status_msg.message_id)
 
     success_accounts = []
-    url = f"https://api-tools.yshshopmails.shop/api/v1/public/outlook/buy?key={api_key}"
-
+    
+    # 🔄 UPDATED BULK BUY LOOP
     for _ in range(qty):
-        try:
-            raw_resp = requests.get(url, timeout=10)
-            resp = raw_resp.json()
-            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            pwd = resp.get("password") or resp.get("pwd") or ""
-            token = resp.get("token") or resp.get("refresh_token") or ""
-            client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "HOTMAIL_TRUST_BULK"
-
-            if eml and "@" in str(eml):
-                success_accounts.append((eml, pwd, token, client_id, ord_id))
-        except: continue
+        resp = call_buy_api(api_key, "hotmailtrust")
+        eml, pwd, token, client_id, ord_id = extract_account_details(resp, "HOTMAIL_TRUST_BULK")
+        if eml and "@" in str(eml):
+            success_accounts.append((eml, pwd, token, client_id, ord_id))
 
     if not success_accounts:
         try: bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="❌ **Bulk Buy Failed!** Could not fetch accounts from server.", parse_mode="Markdown", reply_markup=markup)
@@ -992,21 +1006,13 @@ def process_outlook_bulk_step(message, edit_msg_id):
     track_message(chat_id, status_msg.message_id)
 
     success_accounts = []
-    url = f"https://outlook.yshshopmails.com/v1/api/create-order.php?key={api_key}"
-
+    
+    # 🔄 UPDATED BULK BUY LOOP
     for _ in range(qty):
-        try:
-            raw_resp = requests.get(url, timeout=10)
-            resp = raw_resp.json()
-            eml = resp.get("mail") or resp.get("email") or resp.get("account") or resp.get("data")
-            pwd = resp.get("password") or resp.get("pwd") or ""
-            token = resp.get("token") or resp.get("refresh_token") or ""
-            client_id = resp.get("client_id") or ""
-            ord_id = resp.get("order_id") or "OUTLOOK_TRUST_BULK"
-
-            if eml and "@" in str(eml):
-                success_accounts.append((eml, pwd, token, client_id, ord_id))
-        except: continue
+        resp = call_buy_api(api_key, "outlooktrust")
+        eml, pwd, token, client_id, ord_id = extract_account_details(resp, "OUTLOOK_TRUST_BULK")
+        if eml and "@" in str(eml):
+            success_accounts.append((eml, pwd, token, client_id, ord_id))
 
     if not success_accounts:
         try: bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="❌ **Bulk Buy Failed!** Could not fetch accounts from server.", parse_mode="Markdown", reply_markup=markup)
@@ -1160,7 +1166,6 @@ def handle_document(message):
 # ==========================================
 # 💬 GLOBAL TEXT LISTENER (AUTO-DETECT ALIAS NAME)
 # ==========================================
-# 🔄 INITIAL 2FA GENERATOR TEXT HANDLER (UPDATED LAYOUT)
 @bot.message_handler(func=lambda message: message.text and not message.text.startswith('/'))
 def process_text_messages(message):
     chat_id, text = message.chat.id, message.text.strip()
