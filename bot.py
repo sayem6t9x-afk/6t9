@@ -12,6 +12,10 @@ import html
 import os
 import threading
 import time
+import hmac
+import base64
+import struct
+import hashlib
 from flask import Flask
 
 # ==========================================
@@ -145,7 +149,6 @@ def gmail_stock_tracker():
     while True:
         try:
             if get_bot_setting('gmail_stock_alert') == '1':
-                # 🟢 FIXED: No API key needed for the public Gmail stock endpoint
                 current_stock_str = get_service_stock(None, "facebook")
                 current_stock = int(current_stock_str) if current_stock_str.isdigit() else 0
                 last_stock = int(get_bot_setting('last_gmail_stock', '0'))
@@ -159,7 +162,7 @@ def gmail_stock_tracker():
                 if current_stock != last_stock:
                     set_bot_setting('last_gmail_stock', str(current_stock))
         except Exception as e: logging.error(f"Stock Tracker Error: {e}")
-        time.sleep(300) # Checks every 5 minutes
+        time.sleep(300)
 
 def save_user_info(user_id, username):
     try:
@@ -227,6 +230,10 @@ def verify_yshshop_api(api_key):
     except: pass
     return False
 
+def toggle_global_auto_delete():
+    current = get_bot_setting('global_auto_delete')
+    set_bot_setting('global_auto_delete', '0' if current == '1' else '1')
+
 # ==========================================
 # 🛠️ CORE LOGIC & PARSERS
 # ==========================================
@@ -257,7 +264,6 @@ def detect_facebook_otp(subject, content):
 
 def get_service_stock(api_key, service_name):
     try:
-        # 🟢 FIXED: Check Facebook/Gmail stock from the public URL seen in the Network tab
         if service_name == "facebook":
             r = requests.get("https://facebook.yshshopmails.com/v1/api/stock", timeout=10).json()
             if isinstance(r, dict) and "stock" in r: return str(r["stock"])
@@ -332,7 +338,8 @@ def show_main_instruction(chat_id, message_id=None):
     markup.add(types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"), types.InlineKeyboardButton("🔥 Buy Trust Mail", callback_data="action_buy_hotmail_menu"))
     markup.add(types.InlineKeyboardButton("🛠️ Zoho/Yandex Alias", callback_data="action_alias_maker"), types.InlineKeyboardButton("📊 Check Stock", callback_data="action_check_stock"))
     markup.add(types.InlineKeyboardButton("📁 My Bulk Accounts", callback_data="action_bulk_list"), types.InlineKeyboardButton("📜 History Center", callback_data="action_buy_history"))
-    markup.add(types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"), types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings"))
+    markup.add(types.InlineKeyboardButton("👤 Fake Name Gen", callback_data="action_fake_name"), types.InlineKeyboardButton("🔄 Refresh Inbox", callback_data="action_refresh_direct"))
+    markup.add(types.InlineKeyboardButton("⚙️ Settings", callback_data="action_settings"))
     if chat_id == ADMIN_ID: markup.add(types.InlineKeyboardButton("👨‍💻 Admin Panel (Boss Only)", callback_data="action_admin_panel"))
     
     instruction_text = (
@@ -371,9 +378,47 @@ def handle_query(call):
         return bot.answer_callback_query(call.id, "🛠️ Bot is under Maintenance!", show_alert=True)
 
     if call.data == "action_menu":
+        bot.clear_step_handler_by_chat_id(chat_id)
         clear_chat_history(chat_id, keep_message_id=message_id)
         show_main_instruction(chat_id, message_id=message_id)
         return
+
+    # --- FAKE NAME GENERATOR ---
+    elif call.data == "action_fake_name":
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("👨 Male (US/UK)", callback_data="gen_name_male"),
+            types.InlineKeyboardButton("👩 Female (US/UK)", callback_data="gen_name_female")
+        )
+        markup.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="👤 **Fake Name Generator (US/UK)**\n━━━━━━━━━━━━━━━━━━━\n\nChoose the gender to generate a completely random English name:", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+
+    elif call.data.startswith("gen_name_"):
+        gender = call.data.split("_")[2]
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Generating Name...**", parse_mode="Markdown")
+        try:
+            resp = requests.get(f"https://randomuser.me/api/?nat=us,gb&gender={gender}", timeout=5).json()
+            name_data = resp["results"][0]["name"]
+            full_name = f"{name_data['first']} {name_data['last']}"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("📨 Create Alias with this Name", callback_data=f"use_fake_name_{full_name}"))
+            markup.row(types.InlineKeyboardButton("🔄 Generate Again", callback_data=f"gen_name_{gender}"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"👤 **Generated Fake Name:**\n━━━━━━━━━━━━━━━━━━━\n\n📝 `{full_name}`\n\n*Tap the name to copy it, or click below to directly create an alias!*", parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ **Failed to generate name.** Try again.", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data.startswith("use_fake_name_"):
+        name = call.data.split("_", 3)[3]
+        settings = get_user_settings(chat_id)
+        if not settings["base_email"]:
+            return bot.answer_callback_query(call.id, "⚠️ Set Base Email in Zoho/Yandex settings first!", show_alert=True)
+        set_temp_data(chat_id, None, None, name)
+        markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Yes", callback_data="confirm_alias_yes"), types.InlineKeyboardButton("❌ No", callback_data="confirm_alias_no"))
+        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"📌 Do you want to create an alias mail for **{name}**?", parse_mode="Markdown", reply_markup=markup)
+        except: pass
+    # ---------------------------
 
     elif call.data.startswith("refresh_2fa_"):
         secret = call.data.replace("refresh_2fa_", "")
@@ -389,11 +434,12 @@ def handle_query(call):
     elif call.data == "action_alias_maker":
         settings = get_user_settings(chat_id)
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("⚙️ Set Base Email & Pass", callback_data="action_set_base_email"), types.InlineKeyboardButton("📜 Created Aliases History", callback_data="hist_alias")).row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🛠️ **Zoho & Yandex Alias Generator**\n━━━━━━━━━━━━━━━━━━━\n📌 **Your Base Email:** `{settings['base_email'] or 'Not Set'}`\n\nSend any name (e.g., `sayem ahamed`), and I will automatically generate the corresponding domain alias for you!\n\n👇 **Options below:**", parse_mode="Markdown", reply_markup=markup)
+        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🛠️ **Zoho & Yandex Alias Generator**\n━━━━━━━━━━━━━━━━━━━\n📌 **Your Base Email:** `{settings['base_email'] or 'Not Set'}`\n\nSend any name (English ONLY), and I will automatically generate the corresponding domain alias for you!\n\n👇 **Options below:**", parse_mode="Markdown", reply_markup=markup)
         except: pass
 
     elif call.data == "action_set_base_email":
-        msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|AppPassword` or `example@yandex.com|AppPassword`)", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **Please send your Base Email and App Password using the pipe (`|`) format:**\n(Example: `example@zohomail.com|AppPassword` or `example@yandex.com|AppPassword`)", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_base_email_step, msg.message_id)
 
@@ -498,7 +544,8 @@ def handle_query(call):
         
     elif call.data == "admin_broadcast":
         if chat_id != ADMIN_ID: return
-        msg = bot.send_message(chat_id, "📢 **Enter the message you want to broadcast to ALL USERS:**", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "📢 **Enter the message you want to broadcast to ALL USERS:**", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_broadcast_step)
 
@@ -519,13 +566,15 @@ def handle_query(call):
 
     elif call.data == "admin_ban_user":
         if chat_id != ADMIN_ID: return
-        msg = bot.send_message(chat_id, "👇 **Send the User ID or @username you want to BAN:**", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **Send the User ID or @username you want to BAN:**", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_ban_step, msg.message_id)
 
     elif call.data == "admin_unban_user":
         if chat_id != ADMIN_ID: return
-        msg = bot.send_message(chat_id, "👇 **Send the User ID or @username you want to UNBAN:**", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **Send the User ID or @username you want to UNBAN:**", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_unban_step, msg.message_id)
 
@@ -536,7 +585,8 @@ def handle_query(call):
         except: pass
 
     elif call.data == "action_set_api":
-        msg = bot.send_message(chat_id, "👇 **Please send your valid 'yshshopmails' API Key now:**", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **Please send your valid 'yshshopmails' API Key now:**", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_api_key_step, msg.message_id)
 
@@ -557,7 +607,7 @@ def handle_query(call):
             history_text = "🔴 **Your Purchased Gmail History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\n\n"
             for idx, (eml, ord_id, date_str) in enumerate(rows, 1):
                 dt = date_str.strftime('%d-%b %I:%M %p') if isinstance(date_str, datetime) else str(date_str)[:16]
-                history_text += f"**{idx}.** `{eml}`\n   🆔 Order ID: `{ord_id}` | 🕒 {dt}\n\n"
+                history_text += f"**{idx}.** `{eml}`\n  🆔 Order ID: `{ord_id}` | 🕒 {dt}\n\n"
             
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Back to History Menu", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
@@ -712,7 +762,6 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Working... Fetching Live Data**", parse_mode="Markdown")
             
             api_key = get_user_settings(chat_id)["api_key"]
-
             gmail_stock = get_service_stock(api_key, "facebook")
             hotmail_stock = get_service_stock(api_key, "hotmailtrust")
             outlook_stock = get_service_stock(api_key, "outlooktrust")
@@ -785,7 +834,8 @@ def handle_query(call):
     elif call.data == "buy_hm_bulk":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        msg = bot.send_message(chat_id, "👇 **How many Hotmail Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **How many Hotmail Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_hotmail_bulk_step, msg.message_id)
 
@@ -798,7 +848,8 @@ def handle_query(call):
     elif call.data == "buy_out_bulk":
         if not get_user_settings(chat_id)["api_key"]:
             return bot.answer_callback_query(call.id, "⚠️ Set your yshshopmails API Key in Settings first!", show_alert=True)
-        msg = bot.send_message(chat_id, "👇 **How many Outlook Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown")
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Cancel & Main Menu", callback_data="action_menu"))
+        msg = bot.send_message(chat_id, "👇 **How many Outlook Trust accounts do you want to buy?**\n(Type a number between 1 and 50, e.g., `5`):", parse_mode="Markdown", reply_markup=markup)
         track_message(chat_id, msg.message_id)
         bot.register_next_step_handler(msg, process_outlook_bulk_step, msg.message_id)
 
@@ -939,7 +990,7 @@ def process_base_email_step(message, edit_msg_id):
         return
     parts = [p.strip() for p in text.split('|')]
     set_user_base_credentials(chat_id, parts[0], parts[1])
-    msg = bot.send_message(chat_id, f"✅ **Success! Base Email & App Password saved.**\n\nBase Email: `{parts[0]}`\n\nNow simply send any name in chat to generate your domain alias automatically!", parse_mode="Markdown", reply_markup=markup)
+    msg = bot.send_message(chat_id, f"✅ **Success! Base Email & App Password saved.**\n\nBase Email: `{parts[0]}`\n\nNow simply send any English name in chat to generate your domain alias automatically!", parse_mode="Markdown", reply_markup=markup)
     track_message(chat_id, msg.message_id)
 
 def process_hotmail_bulk_step(message, edit_msg_id):
@@ -1086,7 +1137,7 @@ def process_ban_step(message, edit_msg_id):
                     conn.commit()
                     bot.send_message(chat_id, f"✅ **Success!** User `{target_input}` has been **BANNED**.", parse_mode="Markdown", reply_markup=markup)
                 else: bot.send_message(chat_id, f"❌ **User Not Found!**", parse_mode="Markdown", reply_markup=markup)
-    except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}")
+    except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}", reply_markup=markup)
 
 def process_unban_step(message, edit_msg_id):
     chat_id = message.chat.id
@@ -1108,7 +1159,7 @@ def process_unban_step(message, edit_msg_id):
                     conn.commit()
                     bot.send_message(chat_id, f"✅ **Success!** User `{target_input}` has been **UNBANNED**.", parse_mode="Markdown", reply_markup=markup)
                 else: bot.send_message(chat_id, f"❌ **User Not Found!**", parse_mode="Markdown", reply_markup=markup)
-    except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}")
+    except Exception as e: bot.send_message(chat_id, f"❌ Error: {e}", reply_markup=markup)
 
 def process_api_key_step(message, edit_msg_id):
     chat_id, api_key = message.chat.id, message.text.strip()
@@ -1185,9 +1236,18 @@ def process_text_messages(message):
     if is_user_banned(chat_id): return bot.send_message(chat_id, BANNED_MSG, parse_mode="Markdown")
     if is_maintenance(chat_id): return bot.send_message(chat_id, MAINTENANCE_MSG, parse_mode="Markdown")
 
+    text_lower = text.lower()
+    
+    # 🟢 Hi / Hello / Menu Router
+    if text_lower in ['hi', 'hello', 'hey', 'start', 'menu', 'help', 'bot']:
+        bot.clear_step_handler_by_chat_id(chat_id)
+        show_main_instruction(chat_id)
+        return
+
     settings = get_user_settings(chat_id)
     
-    if settings["base_email"] and (" " in text or len(text.split()) > 0) and "@" not in text and "|" not in text and len(text) < 40 and not re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
+    # 🟢 Strict English Name Checker for Alias Mail
+    if settings["base_email"] and re.match(r'^[a-zA-Z\s]+$', text) and len(text) < 40 and not re.match(r'^[A-Z2-7]{16,100}$', text.replace(" ", "").upper()):
         set_temp_data(chat_id, None, None, text)
         markup = types.InlineKeyboardMarkup(row_width=2).add(types.InlineKeyboardButton("✅ Yes", callback_data="confirm_alias_yes"), types.InlineKeyboardButton("❌ No", callback_data="confirm_alias_no"))
         msg = bot.send_message(chat_id, f"📌 Do you want to create an alias mail for **{text}**?", parse_mode="Markdown", reply_markup=markup)
