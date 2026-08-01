@@ -99,6 +99,14 @@ def init_db():
         except psycopg2.Error: pass
         try: cursor.execute("ALTER TABLE purchase_history ADD COLUMN provider TEXT")
         except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE purchase_history ADD COLUMN password TEXT")
+        except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE purchase_history ADD COLUMN token TEXT")
+        except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE purchase_history ADD COLUMN client_id TEXT")
+        except psycopg2.Error: pass
+        try: cursor.execute("ALTER TABLE bulk_accounts ADD COLUMN is_used BOOLEAN DEFAULT FALSE")
+        except psycopg2.Error: pass
         
         try: cursor.execute("DELETE FROM banned_users WHERE user_id=%s", (ADMIN_ID,))
         except psycopg2.Error: pass
@@ -642,19 +650,53 @@ def handle_query(call):
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, order_id, provider, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC LIMIT 20", (chat_id,))
+                    cursor.execute("SELECT email, password, token, client_id, order_id, provider, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook', 'hotmailnew', 'outlooknew') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC LIMIT 20", (chat_id,))
                     rows = cursor.fetchall()
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Trust Mail purchase history is empty.", show_alert=True)
             
             history_text = "🔥 **Your Hotmail/Outlook Trust History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\n\n"
-            for idx, (eml, ord_id, prov, date_str) in enumerate(rows, 1):
+            for idx, (eml, pwd, tok, cli, ord_id, prov, date_str) in enumerate(rows, 1):
                 prov_tag = (prov or "TRUST").upper()
                 dt_formatted = date_str.strftime('%d-%b %I:%M %p') if isinstance(date_str, datetime) else str(date_str)[:16]
-                history_text += f"**{idx}.** [{prov_tag}] `{eml}`\n   🆔 Order: `{ord_id}` | 🕒 {dt_formatted}\n\n"
+                
+                # FULL FORMAT WITH PIPES
+                pwd_str = f"|{pwd}" if pwd else ""
+                tok_str = f"|{tok}" if tok else ""
+                cli_str = f"|{cli}" if cli else ""
+                full_acc = f"{eml}{pwd_str}{tok_str}{cli_str}"
+                
+                history_text += f"**{idx}.** [{prov_tag}]\n`{full_acc}`\n🆔 Order: `{ord_id}` | 🕒 {dt_formatted}\n\n"
             
-            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Back to History Menu", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("📥 Download Full History (.txt)", callback_data="dl_hist_trust"))
+            markup.row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text[:4000], parse_mode="Markdown", reply_markup=markup)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    elif call.data == "dl_hist_trust":
+        try:
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Generating your File from Cloud...**", parse_mode="Markdown")
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, token, client_id, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook', 'hotmailnew', 'outlooknew') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC", (chat_id,))
+                    rows = cursor.fetchall()
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your history is empty.", show_alert=True)
+            
+            filename = f"Trust_Mail_Full_History_{chat_id}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"--- Your Hotmail/Outlook Trust Purchase History ---\n--- Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n\n")
+                for eml, pwd, tok, cli, date_str in rows:
+                    pwd_str = f"|{pwd}" if pwd else ""
+                    tok_str = f"|{tok}" if tok else ""
+                    cli_str = f"|{cli}" if cli else ""
+                    f.write(f"{eml}{pwd_str}{tok_str}{cli_str}\n")
+                    
+            with open(filename, "rb") as f:
+                doc_msg = bot.send_document(chat_id, f, caption=f"📥 **History Export Successful!**\nTotal Saved Accounts: {len(rows)}", parse_mode="Markdown")
+                track_message(chat_id, doc_msg.message_id)
+            os.remove(filename) 
+            handle_query(types.CallbackQuery(call.id, call.from_user, call.data, call.chat_instance, call.message, data="hist_trust"))
+        except Exception as e: bot.send_message(chat_id, f"❌ Export Error: {e}")
 
     elif call.data == "hist_alias":
         try:
@@ -676,15 +718,17 @@ def handle_query(call):
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT id, email FROM bulk_accounts WHERE owner_id=%s LIMIT 10", (chat_id,))
+                    # ONLY FETCH UNUSED ACCOUNTS
+                    cursor.execute("SELECT id, email FROM bulk_accounts WHERE owner_id=%s AND (is_used=FALSE OR is_used IS NULL) LIMIT 10", (chat_id,))
                     rows = cursor.fetchall()
-                    cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s", (chat_id,))
+                    cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s AND (is_used=FALSE OR is_used IS NULL)", (chat_id,))
                     total = cursor.fetchone()[0]
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Cloud Bulk List is empty! Upload a .txt file first.", show_alert=True)
-            list_text = f"📁 **Your Private Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch Facebook OTP:"
+            
+            list_text = f"📁 **Your Fresh Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch Facebook OTP:"
             markup = types.InlineKeyboardMarkup(row_width=1)
             for r_id, eml in rows: markup.add(types.InlineKeyboardButton(eml, callback_data=f"bf_{r_id}"))
-            markup.row(types.InlineKeyboardButton("📤 Export List", callback_data="action_export_bulk"))
+            markup.row(types.InlineKeyboardButton("📤 Export Fresh List", callback_data="action_export_bulk"))
             markup.row(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_bulk_list"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=list_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
@@ -694,16 +738,16 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Generating your File from Cloud...**", parse_mode="Markdown")
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, password, provider, refresh_token, client_id FROM bulk_accounts WHERE owner_id=%s", (chat_id,))
+                    cursor.execute("SELECT email, password, provider, refresh_token, client_id FROM bulk_accounts WHERE owner_id=%s AND (is_used=FALSE OR is_used IS NULL)", (chat_id,))
                     rows = cursor.fetchall()
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your list is empty.", show_alert=True)
-            filename = f"exported_accounts_{chat_id}.txt"
+            filename = f"exported_fresh_accounts_{chat_id}.txt"
             with open(filename, "w", encoding="utf-8") as f:
                 for row in rows:
                     if row[2] == 'hotmail' and row[3] and row[4]: f.write(f"{row[0]}|{row[1]}|{row[3]}|{row[4]}\n")
                     else: f.write(f"{row[0]}|{row[1]}\n")
             with open(filename, "rb") as f:
-                doc_msg = bot.send_document(chat_id, f, caption=f"📤 **Export Successful!**\nTotal Accounts: {len(rows)}", parse_mode="Markdown")
+                doc_msg = bot.send_document(chat_id, f, caption=f"📤 **Fresh Export Successful!**\nTotal Accounts: {len(rows)}", parse_mode="Markdown")
                 track_message(chat_id, doc_msg.message_id)
             os.remove(filename) 
             show_main_instruction(chat_id, message_id=message_id)
@@ -749,7 +793,7 @@ def handle_query(call):
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s", (chat_id,))
+                    cursor.execute("SELECT COUNT(*) FROM bulk_accounts WHERE owner_id=%s AND (is_used=FALSE OR is_used IS NULL)", (chat_id,))
                     local_stock = cursor.fetchone()[0]
 
             dashboard_text = (
@@ -760,7 +804,7 @@ def handle_query(call):
                 f"🌐 **Outlook Trust Stock:** `{outlook_stock}` pcs\n"
                 f"💳 **Your Balance:** `{balance}`\n"
                 "━━━━━━━━━━━━━━━━━━━\n"
-                f"📁 **Your Cloud TXT Stock:** `{local_stock}` accounts."
+                f"📁 **Your Fresh Cloud Stock:** `{local_stock}` accounts."
             )
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="action_check_stock"), types.InlineKeyboardButton("🛒 Buy Gmail", callback_data="action_buy_gmail"))
@@ -875,8 +919,8 @@ def handle_query(call):
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, 'hotmail', token, client_id, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
                         
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'hotmail')", (chat_id, eml, str(ord_id)))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -908,8 +952,8 @@ def handle_query(call):
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (eml, pwd, 'hotmail', token, client_id, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s)", (chat_id, eml, pwd, token, client_id))
                         
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                        cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'outlook')", (chat_id, eml, str(ord_id)))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                        cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
                     conn.commit()
                 bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Outlook Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
@@ -1005,8 +1049,8 @@ def process_hotmail_bulk_step(message, edit_msg_id):
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
-                    cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'hotmail')", (chat_id, eml, str(ord_id)))
+                    cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
@@ -1069,8 +1113,8 @@ def process_outlook_bulk_step(message, edit_msg_id):
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
-                    cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, 'hotmail', %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'outlook')", (chat_id, eml, str(ord_id)))
+                    cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
@@ -1196,10 +1240,10 @@ def handle_document(message):
                     prov = 'gmail' if 'gmail' in eml.lower() else 'zoho' if 'zoho' in eml.lower() else 'yandex' if 'yandex' in eml.lower() else 'hotmail' if len(parts) >= 4 else 'zoho'
                     
                     if len(parts) == 2:
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, parts[1], prov))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, %s, NULL, NULL, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, parts[1], prov))
                         success_count += 1
                     elif len(parts) >= 4:
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, parts[1], prov, parts[2], parts[3]))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, %s, %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, parts[1], prov, parts[2], parts[3]))
                         success_count += 1
             conn.commit()
             
@@ -1248,7 +1292,7 @@ def process_text_messages(message):
                         if cursor.fetchone(): cursor.execute("UPDATE users SET email=%s, password=%s, provider=%s, refresh_token=NULL, client_id=NULL WHERE user_id=%s", (eml, pwd, prov, chat_id))
                         else: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, pwd, prov))
                         
-                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, NULL, NULL) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, pwd, prov))
+                        cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, %s, NULL, NULL, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider", (chat_id, eml, pwd, prov))
                         cursor.execute("INSERT INTO alias_history (owner_id, email, password, provider) VALUES (%s, %s, %s, %s)", (chat_id, eml, pwd, prov))
 
                     elif len(parts) >= 4:
@@ -1327,7 +1371,11 @@ def send_full_mail_to_chat(chat_id, idx):
         if not row: return
             
         subject, sender, full_content = row
-        safe_body = clean_html_tags(full_content).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+        
+        # 🟢 NEW: CLEAN AND STYLIZED TEXT ALIGNMENT
+        safe_body_lines = clean_html_tags(full_content).replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '').split('\n')
+        # Using blockquotes to separate the main body from headers and give it a clean, centered-like focus
+        formatted_body = "\n".join([f"> {line.strip()}" for line in safe_body_lines if line.strip()])
         
         logo_url = "https://cdn-icons-png.flaticon.com/512/732/732200.png"
         if provider == 'gmail': logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Gmail_icon_%282020%29.svg/512px-Gmail_icon_%282020%29.svg.png"
@@ -1335,7 +1383,7 @@ def send_full_mail_to_chat(chat_id, idx):
         elif provider == 'zoho': logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Zoho_Corporation_logo.svg/512px-Zoho_Corporation_logo.svg.png"
         elif provider == 'yandex': logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/Yandex_Mail_icon.svg/512px-Yandex_Mail_icon.svg.png"
         
-        message_text = f"📬 **Secure Encrypted Mail Viewer**\n\n👤 **From:** `{sender}`\n📌 **Subject:** `{subject}`\n━━━━━━━━━━━━━━━━━━━\n\n{safe_body[:3000]}\n\n⚠️ *Data Auto-Destructs in 10 mins.*"
+        message_text = f"📬 **Secure Encrypted Mail Viewer**\n\n👤 **From:** `{sender}`\n📌 **Subject:** `{subject}`\n━━━━━━━━━━━━━━━━━━━\n\n{formatted_body[:3000]}\n\n⚠️ *Data Auto-Destructs in 10 mins.*"
         
         try:
             sent_msg = bot.send_photo(chat_id, logo_url, caption=message_text, parse_mode="Markdown")
@@ -1450,16 +1498,17 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 else: response_text = "❌ **Outlook Server Error:** Gateway unavailable."
             except: response_text = "❌ **Outlook API Timeout:** Server took too long to respond."
 
+        # 🟢 UPDATED: MARK AS USED INSTEAD OF DELETING
         if bulk_email_to_delete:
             global_del = get_global_auto_delete()
             if otp_found and global_del:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute("DELETE FROM bulk_accounts WHERE email=%s AND owner_id=%s", (bulk_email_to_delete, chat_id))
+                        cursor.execute("UPDATE bulk_accounts SET is_used=TRUE WHERE email=%s AND owner_id=%s", (bulk_email_to_delete, chat_id))
                     conn.commit()
-                response_text += f"\n✅ *Global Auto-Delete ON: Account removed from Database.*"
+                response_text += f"\n✅ *Account Marked as USED (Moved to Used DB)*"
             elif otp_found and not global_del: response_text += f"\nℹ️ *Global Auto-Delete OFF: Account preserved in Database.*"
-            elif not otp_found: response_text += f"\nℹ️ *Account kept in queue (No Facebook OTP found).* "
+            elif not otp_found: response_text += f"\nℹ️ *Account kept in Fresh queue (No OTP found yet).* "
 
         if cached_emails:
             with get_db_connection() as conn:
