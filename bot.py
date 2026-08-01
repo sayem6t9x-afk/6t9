@@ -592,7 +592,12 @@ def handle_query(call):
 
     # 📜 PRO HISTORY SUB-MENU SYSTEM
     elif call.data == "action_buy_history":
-        markup = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("🔴 Gmail Buy History", callback_data="hist_gmail"), types.InlineKeyboardButton("🔥 Hotmail / Outlook Trust History", callback_data="hist_trust"), types.InlineKeyboardButton("🛠️ Zoho / Yandex Alias History", callback_data="hist_alias")).row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton("🔴 Gmail Buy History", callback_data="hist_gmail"))
+        markup.add(types.InlineKeyboardButton("👤 Single Trust Mail History", callback_data="hist_trust_single"))
+        markup.add(types.InlineKeyboardButton("📦 Bulk Trust Mail History", callback_data="hist_trust_bulk"))
+        markup.add(types.InlineKeyboardButton("🛠️ Zoho / Yandex Alias History", callback_data="hist_alias"))
+        markup.row(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
         try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="📜 **Account & Purchase History Center**\n━━━━━━━━━━━━━━━━━━━\n\nPlease select which history record you want to view:", parse_mode="Markdown", reply_markup=markup)
         except: pass
 
@@ -613,36 +618,79 @@ def handle_query(call):
             bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
-    elif call.data == "hist_trust":
+    # 🆕 নতুন সিঙ্গেল ট্রাস্ট হিস্টরি
+    elif call.data == "hist_trust_single":
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, password, token, client_id, provider, purchased_at FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook', 'hotmailtrust', 'outlooktrust') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC LIMIT 20", (chat_id,))
+                    cursor.execute("SELECT email, purchased_at FROM purchase_history WHERE owner_id=%s AND provider IN ('hotmail', 'outlook', 'hotmailtrust', 'outlooktrust') ORDER BY purchased_at DESC LIMIT 10", (chat_id,))
                     rows = cursor.fetchall()
-            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Trust Mail purchase history is empty.", show_alert=True)
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Single Trust Mail history is empty.", show_alert=True)
             
-            history_text = "🔥 **Your Hotmail/Outlook Trust History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\n\n"
-            for idx, (eml, pwd, tok, cli, prov, date_str) in enumerate(rows, 1):
-                dt = date_str.strftime('%d-%b %I:%M %p') if isinstance(date_str, datetime) else str(date_str)[:16]
-                full_acc = eml
-                if pwd: full_acc += f"|{pwd}"
-                if tok: full_acc += f"|{tok}"
-                if cli: full_acc += f"|{cli}"
-                history_text += f"**{idx}.** 🕒 {dt}\n`{full_acc}`\n\n"
+            history_text = "👤 **Your Single Trust History (Last 10)**\n━━━━━━━━━━━━━━━━━━━\n👇 **Tap an email below to view & copy the full details:**\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for eml, date_str in rows:
+                markup.add(types.InlineKeyboardButton(f"📧 {eml}", callback_data=f"vts_{eml}"))
             
-            markup = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("📥 Download Full History (.txt)", callback_data="dl_hist_trust")).row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text[:4000], parse_mode="Markdown", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton("📥 Download All Single History (.txt)", callback_data="dl_hist_trust_single"))
+            markup.row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
-    elif call.data == "dl_hist_trust":
+    # 🆕 নতুন বাল্ক ট্রাস্ট হিস্টরি
+    elif call.data == "hist_trust_bulk":
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT email, password, token, client_id FROM purchase_history WHERE owner_id=%s AND (provider IN ('hotmail', 'outlook', 'hotmailtrust', 'outlooktrust') OR email NOT LIKE '%%@gmail.com') ORDER BY purchased_at DESC", (chat_id,))
+                    cursor.execute("SELECT email, purchased_at FROM purchase_history WHERE owner_id=%s AND provider IN ('hotmail_bulk', 'outlook_bulk') ORDER BY purchased_at DESC LIMIT 10", (chat_id,))
+                    rows = cursor.fetchall()
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Bulk Trust Mail history is empty.", show_alert=True)
+            
+            history_text = "📦 **Your Bulk Trust History (Last 10)**\n━━━━━━━━━━━━━━━━━━━\n👇 **Tap an email below to view & copy the full details:**\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for eml, date_str in rows:
+                markup.add(types.InlineKeyboardButton(f"📧 {eml}", callback_data=f"vtb_{eml}"))
+            
+            markup.add(types.InlineKeyboardButton("📥 Download All Bulk History (.txt)", callback_data="dl_hist_trust_bulk"))
+            markup.row(types.InlineKeyboardButton("⬅️ Back", callback_data="action_buy_history"), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=history_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    # 🆕 ওয়ান ক্লিক ফুল কপি ভিউয়ার
+    elif call.data.startswith("vts_") or call.data.startswith("vtb_"):
+        is_bulk = call.data.startswith("vtb_")
+        target_email = call.data[4:]
+        back_cb = "hist_trust_bulk" if is_bulk else "hist_trust_single"
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, token, client_id FROM purchase_history WHERE owner_id=%s AND email=%s LIMIT 1", (chat_id, target_email))
+                    row = cursor.fetchone()
+            if not row: return bot.answer_callback_query(call.id, "⚠️ Data not found!", show_alert=True)
+            
+            eml, pwd, tok, cli = row
+            full_acc = eml
+            if pwd: full_acc += f"|{pwd}"
+            if tok: full_acc += f"|{tok}"
+            if cli: full_acc += f"|{cli}"
+            
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.row(types.InlineKeyboardButton("⬅️ Back to List", callback_data=back_cb), types.InlineKeyboardButton("🏠 Menu", callback_data="action_menu"))
+            
+            msg_text = f"📋 **Full Account Details**\n━━━━━━━━━━━━━━━━━━━\n👇 Tap the box below to copy:\n\n`{full_acc}`"
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg_text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+
+    # 🆕 সিঙ্গেল হিস্টরি ডাউনলোড
+    elif call.data == "dl_hist_trust_single":
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, token, client_id FROM purchase_history WHERE owner_id=%s AND provider IN ('hotmail', 'outlook', 'hotmailtrust', 'outlooktrust')", (chat_id,))
                     rows = cursor.fetchall()
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your history is empty.", show_alert=True)
             
-            filename = f"Trust_Mail_Full_History_{chat_id}.txt"
+            filename = f"Single_Trust_Mails_{chat_id}.txt"
             with open(filename, "w", encoding="utf-8") as f:
                 for eml, pwd, tok, cli in rows:
                     full_acc = eml
@@ -652,7 +700,32 @@ def handle_query(call):
                     f.write(f"{full_acc}\n")
                     
             with open(filename, "rb") as f:
-                doc_msg = bot.send_document(chat_id, f, caption=f"📥 **History Export Successful!**\nTotal Saved Accounts: {len(rows)}", parse_mode="Markdown")
+                doc_msg = bot.send_document(chat_id, f, caption=f"📥 **Single History Export Successful!**\nTotal Accounts: {len(rows)}", parse_mode="Markdown")
+                track_message(chat_id, doc_msg.message_id)
+            os.remove(filename) 
+            bot.answer_callback_query(call.id, "Download Complete!")
+        except Exception as e: bot.send_message(chat_id, f"❌ Export Error: {e}")
+
+    # 🆕 বাল্ক হিস্টরি ডাউনলোড
+    elif call.data == "dl_hist_trust_bulk":
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, token, client_id FROM purchase_history WHERE owner_id=%s AND provider IN ('hotmail_bulk', 'outlook_bulk')", (chat_id,))
+                    rows = cursor.fetchall()
+            if not rows: return bot.answer_callback_query(call.id, "⚠️ Your bulk history is empty.", show_alert=True)
+            
+            filename = f"Bulk_Trust_Mails_{chat_id}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                for eml, pwd, tok, cli in rows:
+                    full_acc = eml
+                    if pwd: full_acc += f"|{pwd}"
+                    if tok: full_acc += f"|{tok}"
+                    if cli: full_acc += f"|{cli}"
+                    f.write(f"{full_acc}\n")
+                    
+            with open(filename, "rb") as f:
+                doc_msg = bot.send_document(chat_id, f, caption=f"📦 **Bulk History Export Successful!**\nTotal Accounts: {len(rows)}", parse_mode="Markdown")
                 track_message(chat_id, doc_msg.message_id)
             os.remove(filename) 
             bot.answer_callback_query(call.id, "Download Complete!")
@@ -1032,7 +1105,8 @@ def process_hotmail_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
+                    # 🆕 এখানে provider 'hotmail_bulk' দেওয়া হয়েছে
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail_bulk')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
@@ -1094,7 +1168,8 @@ def process_outlook_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
+                    # 🆕 এখানে provider 'outlook_bulk' দেওয়া হয়েছে
+                    cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook_bulk')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❌ DB Error: {e}", reply_markup=markup)
