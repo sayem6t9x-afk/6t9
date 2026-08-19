@@ -237,12 +237,21 @@ def toggle_global_auto_delete():
 # ==========================================
 # 🛠️ CORE LOGIC & PARSERS
 # ==========================================
+
+# 🟢 EXTREME LAYER: HTML to Newline Fixer
 def clean_html_tags(raw_html):
     if not raw_html: return "No Content"
     text = html.unescape(raw_html)
+    # Convert HTML line breaks/paragraphs into real Telegram newlines
+    text = re.sub(r'<(br|p|div|tr|h\d)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    # Remove scripts and styles completely
     text = re.sub(r'<(style|script)[^>]*>[\s\S]*?</\1>', '', text, flags=re.IGNORECASE)
-    clean_text = re.sub(r'<[^>]+>', ' ', text)
-    return re.sub(r'\s+', ' ', clean_text).strip()
+    # Remove remaining HTML tags
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    # Collapse multiple spaces, but preserve newlines
+    clean_text = re.sub(r'[ \t]+', ' ', clean_text)
+    clean_text = re.sub(r'\n\s*\n+', '\n\n', clean_text)
+    return clean_text.strip()
 
 def get_html_body(msg):
     try:
@@ -259,28 +268,34 @@ def get_service_name(sender, subject):
     match = re.search(r'@([a-zA-Z0-9.-]+)', str(sender))
     if match:
         parts = match.group(1).lower().split('.')
-        # mail.instagram.com এর মত সাব-ডোমেইন থাকলে আসল নামটা (instagram) ধরবে
         domain = parts[1].upper() if parts[0] in ['mail', 'no-reply', 'noreply', 'info', 'support', 'e'] and len(parts) > 1 else parts[0].upper()
-        
         if domain.lower() not in ['gmail', 'yahoo', 'hotmail', 'outlook', 'yandex', 'zoho']:
             return domain
-            
     sub_word = str(subject).split()[0].upper()
     return sub_word[:12] if sub_word else "SERVICE"
 
+# 🟢 EXTREME LAYER: The Ultimate OTP Engine
 def detect_universal_otp(sender, subject, content):
     sender_str = str(sender).lower()
     subject_str = str(subject).lower()
     content_str = str(content).lower()
 
-    # 1. Negative Keywords: ফালতু নোটিফিকেশনগুলো স্কিপ করবে
+    # [ADDRESS TRIMMING] - Remove generic Meta footers to avoid scanning 94025 without blacklisting it!
+    footers_to_remove = [
+        "menlo park, ca 94025", "1601 willow rd", "1 meta way", 
+        "meta platforms, inc.", "© facebook", "© meta", "ca 94025"
+    ]
+    for f in footers_to_remove:
+        content_str = content_str.replace(f, "")
+
+    # Negative Keywords: Ignore pure alerts
     ignore_phrases = [
         'login alert', 'unusual login', 'nouvel appareil', 
         'connecter près', 'security alert', 'alerte de sécurité', 
         'was this you', "c'est bien vous", "venez-vous de vous connecter",
         'password changed', 'mot de passe', 'a été changé', 'reset your password',
         'réinitialiser', 'compte suspendu', 'account suspended',
-        'welcome to', 'action needed'  # <--- Added welcome and action needed 
+        'welcome to', 'action needed'
     ]
     if any(phrase in subject_str for phrase in ignore_phrases):
         return None 
@@ -288,35 +303,44 @@ def detect_universal_otp(sender, subject, content):
     is_facebook = any(brand in sender_str or brand in subject_str for brand in ['facebook', 'meta', 'instagram', 'ig'])
 
     def is_valid_code(c):
-        c_len = len(c)
-        # ফেসবুক বা ইনস্টাগ্রামের ক্ষেত্রে শুধু 5, 6 বা 8 ডিজিট রিসিভ করবে।
+        c_clean = c.replace(" ", "")
+        c_len = len(c_clean)
+        # FB/IG Codes MUST be 5, 6, or 8 digits.
         if is_facebook and c_len not in [5, 6, 8]: 
             return False
-        # অন্যান্য সাইটের ক্ষেত্রে সাল বা 1601 অ্যাড্রেস বাতিল
-        if not is_facebook and c_len == 4 and c.isdigit():
-            if 2000 <= int(c) <= 2030 or int(c) == 1601: 
+        # Prevent years (2000-2030) from being caught as OTPs for other sites
+        if not is_facebook and c_len == 4 and c_clean.isdigit():
+            if 2000 <= int(c_clean) <= 2030: 
                 return False
         return True
 
-    def find_code(text):
-        # Strict Keyword Search
-        matches = re.findall(r'(?:code|otp|pin|verification|passcode)\s*[:\-\=]?\s*([a-z0-9]{4,8})\b', text)
+    def find_code_in_text(text):
+        # 1. Strict Keyword Search (Normal or Spaced)
+        matches = re.findall(r'(?:code|otp|pin|verification|passcode)\s*[:\-\=]?\s*([\d\s]{4,15})\b', text)
         for m in matches:
-            if is_valid_code(m): return m.upper()
-        
-        # Isolated Numbers Search
-        numbers = re.findall(r'\b(\d{4,8})\b', text)
+            clean_m = m.replace(" ", "")
+            if clean_m.isdigit() and is_valid_code(clean_m): return clean_m
+            
+        # 2. Spaced Digits Reader (e.g. 9 7 0 1 1) -> catches pure spaced digits
+        spaced_numbers = re.findall(r'(?<!\d)(?:\d[ \t]+){4,7}\d(?!\d)', text)
+        for num in spaced_numbers:
+            clean_num = num.replace(" ", "")
+            if is_valid_code(clean_num): return clean_num
+
+        # 3. Isolated Numbers Search
+        numbers = re.findall(r'(?<!\d)(\d{4,8})(?!\d)', text)
         for num in numbers:
             if is_valid_code(num): return num
+            
         return None
 
-    # 2. SUBJECT-FIRST PRIORITY: সবার আগে শুধু সাবজেক্ট স্ক্যান করবে
-    code_from_subject = find_code(subject_str)
+    # [SUBJECT FIRST PRIORITY] - If Subject has the code, return it instantly!
+    code_from_subject = find_code_in_text(subject_str)
     if code_from_subject:
         return code_from_subject
 
-    # 3. Fallback: যদি সাবজেক্টে কোনো কোড না থাকে, শুধুমাত্র তখনই বডি (Content) স্ক্যান করবে
-    return find_code(content_str)
+    # [BODY FALLBACK] - Only scan body if subject doesn't have the code
+    return find_code_in_text(content_str)
 
 def get_service_stock(api_key, service_name):
     try:
