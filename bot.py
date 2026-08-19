@@ -264,14 +264,47 @@ def get_service_name(sender, subject):
     sub_word = str(subject).split()[0].upper()
     return sub_word[:12] if sub_word else "SERVICE"
 
-def detect_universal_otp(subject, content):
-    combined_text = (str(subject) + " " + str(content))
-    # 1. Look for keywords first (Code, OTP, PIN, etc.)
-    match = re.search(r'(?:code|otp|pin|verification|passcode|security)\s*[:\-\=]?\s*([A-Za-z0-9]{4,8})\b', combined_text, re.IGNORECASE)
-    if match: return match.group(1).upper()
-    # 2. Fallback: Find any isolated 4-8 digit pure number
-    match = re.search(r'\b(\d{4,8})\b', combined_text)
-    if match: return match.group(1)
+# 🟢 NEW UNIVERSAL OTP READER WITH 3-LAYER GLITCH FIX
+def detect_universal_otp(sender, subject, content):
+    sender_str = str(sender).lower()
+    subject_str = str(subject).lower()
+    combined_text = subject_str + " " + str(content).lower()
+
+    # 1. Negative Keywords: Skip pure login alerts/warnings
+    ignore_phrases = [
+        'login alert', 'unusual login', 'nouvel appareil', 
+        'connecter près', 'security alert', 'alerte de sécurité', 
+        'was this you', "c'est bien vous", "venez-vous de vous connecter"
+    ]
+    if any(phrase in subject_str for phrase in ignore_phrases):
+        return None # Directly skip if it's an alert email
+
+    is_facebook = 'facebook' in sender_str or 'facebook' in subject_str or 'meta' in sender_str
+
+    # Helper function to validate lengths and bypass years
+    def is_valid_code(c):
+        c_len = len(c)
+        # Facebook Rule: Must be 5, 6, or 8 digits. Ignore 4 or 7.
+        if is_facebook and c_len not in [5, 6, 8]: 
+            return False
+        # Year Bypass for other sites: If 4 digits and between 2024-2030, ignore.
+        if not is_facebook and c_len == 4 and c.isdigit():
+            if 2024 <= int(c) <= 2030:
+                return False
+        return True
+
+    # 2. Strict Keyword Search (Code, OTP, PIN etc.)
+    matches = re.findall(r'(?:code|otp|pin|verification|passcode)\s*[:\-\=]?\s*([a-z0-9]{4,8})\b', combined_text)
+    for m in matches:
+        if is_valid_code(m):
+            return m.upper()
+
+    # 3. Fallback: Isolated Numbers Search
+    numbers = re.findall(r'\b(\d{4,8})\b', combined_text)
+    for num in numbers:
+        if is_valid_code(num):
+            return num
+
     return None
 
 def get_service_stock(api_key, service_name):
@@ -1539,7 +1572,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                                 if isinstance(subject, bytes): subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
                                 from_ = msg.get("From", "Unknown")
                                 
-                                otp_code = detect_universal_otp(subject, clean_html_tags(raw_html))
+                                otp_code = detect_universal_otp(from_, subject, clean_html_tags(raw_html))
                                 if otp_code: 
                                     srv_name = get_service_name(from_, subject)
                                     cached_emails.append((subject, from_, raw_html))
@@ -1568,7 +1601,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                             if msg_to and target_eml_lower not in msg_to: continue
                             raw_body, subject, from_sender = msg.get("message", "No Content"), msg.get("subject", "No Subject"), msg.get("from", "Outlook System")
                             
-                            otp_code = detect_universal_otp(subject, clean_html_tags(raw_body))
+                            otp_code = detect_universal_otp(from_sender, subject, clean_html_tags(raw_body))
                             if otp_code:
                                 srv_name = get_service_name(from_sender, subject)
                                 cached_emails.append((subject, from_sender, raw_body))
