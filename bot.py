@@ -258,38 +258,43 @@ def get_html_body(msg):
 def get_service_name(sender, subject):
     match = re.search(r'@([a-zA-Z0-9.-]+)', str(sender))
     if match:
-        domain = match.group(1).split('.')[0].upper()
+        parts = match.group(1).lower().split('.')
+        # mail.instagram.com এর মত সাব-ডোমেইন থাকলে আসল নামটা (instagram) ধরবে
+        domain = parts[1].upper() if parts[0] in ['mail', 'no-reply', 'noreply', 'info', 'support', 'e'] and len(parts) > 1 else parts[0].upper()
+        
         if domain.lower() not in ['gmail', 'yahoo', 'hotmail', 'outlook', 'yandex', 'zoho']:
             return domain
+            
     sub_word = str(subject).split()[0].upper()
     return sub_word[:12] if sub_word else "SERVICE"
 
-# 🟢 NEW UNIVERSAL OTP READER WITH 3-LAYER GLITCH FIX
 def detect_universal_otp(sender, subject, content):
     sender_str = str(sender).lower()
     subject_str = str(subject).lower()
     combined_text = subject_str + " " + str(content).lower()
 
-    # 1. Negative Keywords: Skip pure login alerts/warnings
+    # 1. Negative Keywords: পাসওয়ার্ড চেঞ্জ বা লগইন অ্যালার্ট সরাসরি স্কিপ করবে
     ignore_phrases = [
         'login alert', 'unusual login', 'nouvel appareil', 
         'connecter près', 'security alert', 'alerte de sécurité', 
-        'was this you', "c'est bien vous", "venez-vous de vous connecter"
+        'was this you', "c'est bien vous", "venez-vous de vous connecter",
+        'password changed', 'mot de passe', 'a été changé', 'reset your password',
+        'réinitialiser', 'compte suspendu', 'account suspended'
     ]
     if any(phrase in subject_str for phrase in ignore_phrases):
-        return None # Directly skip if it's an alert email
+        return None 
 
-    is_facebook = 'facebook' in sender_str or 'facebook' in subject_str or 'meta' in sender_str
+    # ইনস্টাগ্রামকেও ফেসবুক/মেটা এর রুলে ফেলে দেওয়া হলো
+    is_facebook = any(brand in sender_str or brand in subject_str for brand in ['facebook', 'meta', 'instagram', 'ig'])
 
-    # Helper function to validate lengths and bypass years
     def is_valid_code(c):
         c_len = len(c)
-        # Facebook Rule: Must be 5, 6, or 8 digits. Ignore 4 or 7.
+        # ফেসবুক বা ইনস্টাগ্রামের ক্ষেত্রে 1601 বা 4 ডিজিট বাতিল। শুধু 5, 6 বা 8 ডিজিট রিসিভ করবে।
         if is_facebook and c_len not in [5, 6, 8]: 
             return False
-        # Year Bypass for other sites: If 4 digits and between 2024-2030, ignore.
+        # অন্যান্য সাইটের ক্ষেত্রে সাল বা 1601 অ্যাড্রেস বাতিল
         if not is_facebook and c_len == 4 and c.isdigit():
-            if 2024 <= int(c) <= 2030:
+            if 2000 <= int(c) <= 2030 or int(c) == 1601: 
                 return False
         return True
 
@@ -1188,7 +1193,6 @@ def process_hotmail_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    # 🆕 এখানে provider 'hotmail_bulk' দেওয়া হয়েছে
                     cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail_bulk')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
@@ -1251,7 +1255,6 @@ def process_outlook_bulk_step(message, edit_msg_id):
             with conn.cursor() as cursor:
                 for eml, pwd, token, client_id, ord_id in success_accounts:
                     cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
-                    # 🆕 এখানে provider 'outlook_bulk' দেওয়া হয়েছে
                     cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook_bulk')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
             conn.commit()
     except Exception as e:
