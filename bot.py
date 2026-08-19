@@ -255,11 +255,23 @@ def get_html_body(msg):
     except: pass
     return "No HTML Content Found."
 
-def detect_facebook_otp(subject, content):
-    combined_text = (subject + " " + content).lower()
-    if "facebook" in combined_text or "fb" in combined_text:
-        code_match = re.search(r'\b\d{6,8}\b', combined_text)
-        if code_match: return code_match.group(0)
+def get_service_name(sender, subject):
+    match = re.search(r'@([a-zA-Z0-9.-]+)', str(sender))
+    if match:
+        domain = match.group(1).split('.')[0].upper()
+        if domain.lower() not in ['gmail', 'yahoo', 'hotmail', 'outlook', 'yandex', 'zoho']:
+            return domain
+    sub_word = str(subject).split()[0].upper()
+    return sub_word[:12] if sub_word else "SERVICE"
+
+def detect_universal_otp(subject, content):
+    combined_text = (str(subject) + " " + str(content))
+    # 1. Look for keywords first (Code, OTP, PIN, etc.)
+    match = re.search(r'(?:code|otp|pin|verification|passcode|security)\s*[:\-\=]?\s*([A-Za-z0-9]{4,8})\b', combined_text, re.IGNORECASE)
+    if match: return match.group(1).upper()
+    # 2. Fallback: Find any isolated 4-8 digit pure number
+    match = re.search(r'\b(\d{4,8})\b', combined_text)
+    if match: return match.group(1)
     return None
 
 def get_service_stock(api_key, service_name):
@@ -456,7 +468,7 @@ def handle_query(call):
                     with conn.cursor() as cursor:
                         cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET email=EXCLUDED.email, password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=NULL, client_id=NULL", (chat_id, eml, pwd, prov))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking OTP for `{eml}`", parse_mode="Markdown")
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else: bot.answer_callback_query(call.id, "⚠️ Alias record not found!", show_alert=True)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
@@ -475,8 +487,8 @@ def handle_query(call):
                 conn.commit()
         except: pass
         set_temp_data(chat_id, target_alias, provider, settings["temp_name"])
-        markup = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("📥 Check Inbox (Facebook OTP)", callback_data="action_check_latest_alias"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
-        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✨ **Alias Mail Generated Successfully!**\n━━━━━━━━━━━━━━━━━━━\n\n🏢 **Your {provider.upper()} Alias:**\n`{target_alias}`\n\n👇 *Click the button below to check inbox for Facebook OTP instantly!*", parse_mode="Markdown", reply_markup=markup)
+        markup = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("📥 Check Inbox (OTP)", callback_data="action_check_latest_alias"), types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+        try: bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✨ **Alias Mail Generated Successfully!**\n━━━━━━━━━━━━━━━━━━━\n\n🏢 **Your {provider.upper()} Alias:**\n`{target_alias}`\n\n👇 *Click the button below to check inbox for OTP instantly!*", parse_mode="Markdown", reply_markup=markup)
         except: pass
 
     elif call.data == "action_check_latest_alias":
@@ -486,7 +498,7 @@ def handle_query(call):
             with get_db_connection() as conn:
                 with conn.cursor() as cursor: cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET email=EXCLUDED.email, password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=NULL, client_id=NULL", (chat_id, settings["temp_alias"], settings["base_password"], settings["temp_provider"] or "zoho"))
                 conn.commit()
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{settings['temp_alias']}`", parse_mode="Markdown")
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking OTP for `{settings['temp_alias']}`", parse_mode="Markdown")
             fetch_and_send_emails(chat_id, edit_message_id=message_id)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
 
@@ -739,7 +751,7 @@ def handle_query(call):
                     rows = cursor.fetchall()
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your alias history is empty.", show_alert=True)
             
-            history_text = "🛠️ **Your Created Alias History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\nTap any alias below to fetch Facebook OTP instantly:\n\n"
+            history_text = "🛠️ **Your Created Alias History (Last 20)**\n━━━━━━━━━━━━━━━━━━━\nTap any alias below to fetch OTP instantly:\n\n"
             markup = types.InlineKeyboardMarkup(row_width=1)
             for r_id, eml, pwd, prov, date_str in rows:
                 markup.add(types.InlineKeyboardButton(f"📥 {eml} ({prov.upper()})", callback_data=f"chk_alias_{r_id}"))
@@ -757,7 +769,7 @@ def handle_query(call):
                     total = cursor.fetchone()[0]
             if not rows: return bot.answer_callback_query(call.id, "⚠️ Your Cloud Bulk List is empty! Upload a .txt file first.", show_alert=True)
             
-            list_text = f"📁 **Your Fresh Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch Facebook OTP:"
+            list_text = f"📁 **Your Fresh Bulk Accounts ({total} remaining)**\n\n👇 Click an email below to fetch OTP:"
             markup = types.InlineKeyboardMarkup(row_width=1)
             for r_id, eml in rows: markup.add(types.InlineKeyboardButton(eml, callback_data=f"bf_{r_id}"))
             markup.row(types.InlineKeyboardButton("📤 Export Fresh", callback_data="action_export_bulk"), types.InlineKeyboardButton("🗑️ Export Used", callback_data="action_export_used"))
@@ -825,7 +837,7 @@ def handle_query(call):
                     with conn.cursor() as cursor:
                         cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET email=EXCLUDED.email, password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, prov, ref, cli))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"⏳ **Working...**\nChecking OTP for `{eml}`", parse_mode="Markdown")
                 fetch_and_send_emails(chat_id, edit_message_id=message_id, bulk_email_to_delete=eml)
             else: bot.answer_callback_query(call.id, "⚠️ Account not found!", show_alert=True)
         except Exception as e: bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
@@ -945,7 +957,7 @@ def handle_query(call):
                         cursor.execute("INSERT INTO users (user_id, email, password, provider) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET email=EXCLUDED.email, password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=NULL, client_id=NULL", (chat_id, eml, ord_id, 'gmail'))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, order_id, provider) VALUES (%s, %s, %s, 'gmail')", (chat_id, eml, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial Facebook OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Success!**\n📧 `{eml}`\n⏳ *Fetching initial OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
@@ -975,7 +987,7 @@ def handle_query(call):
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'hotmail')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Hotmail Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
@@ -1005,7 +1017,7 @@ def handle_query(call):
                         cursor.execute("INSERT INTO bulk_accounts (owner_id, email, password, provider, refresh_token, client_id, is_used) VALUES (%s, %s, %s, 'hotmail', %s, %s, FALSE) ON CONFLICT (email) DO UPDATE SET password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, token, client_id))
                         cursor.execute("INSERT INTO purchase_history (owner_id, email, password, token, client_id, order_id, provider) VALUES (%s, %s, %s, %s, %s, %s, 'outlook')", (chat_id, eml, pwd, token, client_id, str(ord_id)))
                     conn.commit()
-                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Outlook Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for Facebook OTP...*", parse_mode="Markdown")
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🎉 **Outlook Trust Buy Success!**\n📧 `{eml}`\n⏳ *Checking Outlook Inbox for OTP...*", parse_mode="Markdown")
                 time.sleep(1.5)
                 fetch_and_send_emails(chat_id, edit_message_id=message_id)
             else:
@@ -1027,6 +1039,44 @@ def handle_query(call):
                 bulk_eml = cursor.fetchone()
         fetch_and_send_emails(chat_id, edit_message_id=message_id, bulk_email_to_delete=bulk_eml[0] if bulk_eml else None)
         
+    elif call.data == "action_renew_token":
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏳ **Renewing Outlook Token... Please wait.**", parse_mode="Markdown")
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT email, password, refresh_token, client_id FROM users WHERE user_id=%s", (chat_id,))
+                    row = cursor.fetchone()
+            
+            if row:
+                eml, pwd, old_token, cli = row
+                renew_url = "https://api-tools.yshshopmails.com/api/v1/public/outlook/renew"
+                resp = requests.post(renew_url, json={"data": f"{eml}|{pwd}|{old_token}|{cli}"}, timeout=20).json()
+                
+                if resp.get("success") and resp.get("data"):
+                    new_full_data = resp.get("data")
+                    parts = new_full_data.split("|")
+                    if len(parts) >= 4:
+                        new_pwd, new_token, new_cli = parts[1], parts[2], parts[3]
+                        # Update Database
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("UPDATE users SET password=%s, refresh_token=%s, client_id=%s WHERE user_id=%s", (new_pwd, new_token, new_cli, chat_id))
+                                cursor.execute("UPDATE bulk_accounts SET password=%s, refresh_token=%s, client_id=%s WHERE email=%s AND owner_id=%s", (new_pwd, new_token, new_cli, eml, chat_id))
+                                cursor.execute("UPDATE purchase_history SET password=%s, token=%s, client_id=%s WHERE email=%s", (new_pwd, new_token, new_cli, eml))
+                            conn.commit()
+                        
+                        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Token Renewed Successfully!**\n\n⏳ Fetching Inbox for `{eml}`...", parse_mode="Markdown")
+                        time.sleep(1)
+                        fetch_and_send_emails(chat_id, edit_message_id=message_id)
+                        return
+                
+                err = resp.get("error", "Failed to parse new token.")
+                markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+                bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Renewal Failed:** `{err}`\nAccount might be permanently dead.", parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="action_menu"))
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"❌ **Error:** {e}", parse_mode="Markdown", reply_markup=markup)
+
     elif call.data.startswith("view_mail_"):
         idx = int(call.data.split("_")[2])
         send_full_mail_to_chat(chat_id, idx)
@@ -1345,7 +1395,7 @@ def process_text_messages(message):
                         cursor.execute("INSERT INTO users (user_id, email, password, provider, refresh_token, client_id) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET email=EXCLUDED.email, password=EXCLUDED.password, provider=EXCLUDED.provider, refresh_token=EXCLUDED.refresh_token, client_id=EXCLUDED.client_id", (chat_id, eml, pwd, prov, parts[2], parts[3]))
                 conn.commit()
 
-            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking Facebook OTP for `{eml}`", parse_mode="Markdown")
+            msg = bot.send_message(chat_id, f"⏳ **Working...**\nChecking OTP for `{eml}`", parse_mode="Markdown")
             track_message(chat_id, msg.message_id)
             fetch_and_send_emails(chat_id, edit_message_id=msg.message_id)
         except Exception as e:
@@ -1426,8 +1476,10 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 cursor.execute("SELECT email, password, provider, refresh_token, client_id FROM users WHERE user_id=%s", (chat_id,))
                 result = cursor.fetchone()
 
-        def _create_markup(emails_cached, is_bulk):
+        def _create_markup(emails_cached, is_bulk, needs_renewal=False):
             m = types.InlineKeyboardMarkup()
+            if needs_renewal:
+                m.row(types.InlineKeyboardButton("🔄 Renew Token", callback_data="action_renew_token"))
             if emails_cached: m.row(types.InlineKeyboardButton("📖 View Full Email", callback_data="view_mail_0"))
             if is_bulk: m.row(types.InlineKeyboardButton("🔄 Re-Sync Inbox", callback_data="action_refresh"), types.InlineKeyboardButton("➡️ Next Account", callback_data="action_bulk_list"))
             else: m.row(types.InlineKeyboardButton("🔄 Re-Sync Inbox", callback_data="action_refresh"))
@@ -1439,6 +1491,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
         email_address, password, provider, refresh_token, client_id = result
         target_eml_lower = email_address.lower().strip()
         response_text, cached_emails, otp_found = "", [], False
+        needs_renewal = False
         
         if provider == 'gmail':
             api_key = get_user_settings(chat_id)["api_key"]
@@ -1448,11 +1501,11 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                     data = requests.get(f"https://yshshopmails.com/v1/api/check-otp.php?key={api_key}&id={password}", timeout=10).json()
                     if "otp" in data and data["otp"]:
                         otp_found, otp_code = True, data["otp"]
-                        subject = f"Facebook OTP: {otp_code}"
-                        cached_emails.append((subject, "API@yshshopmails", f"Facebook OTP Code: {otp_code} (Verified API)"))
-                        response_text = f"📨 **Live Inbox ({email_address}) [yshshopmails API]:**\n\n🔹 **[📘 FACEBOOK OTP]** Code: `{otp_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                        subject = f"Verification OTP: {otp_code}"
+                        cached_emails.append((subject, "API@yshshopmails", f"Verification OTP Code: {otp_code} (Verified API)"))
+                        response_text = f"📨 **Live Inbox ({email_address}) [yshshopmails API]:**\n\n🔹 **[VERIFICATION OTP]** Code: `{otp_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                     elif "error" in data: response_text = f"❌ **API Sync Error:** {data['error']}"
-                    else: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP found."
+                    else: response_text = f"📭 **Live Inbox ({email_address})**\nNo Verification OTP found."
                 except: response_text = "❌ **API Connection Timeout.** Try again."
 
         elif provider in ['zoho', 'yandex']:
@@ -1486,23 +1539,26 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                                 if isinstance(subject, bytes): subject = subject.decode(encoding if encoding else "utf-8", errors="ignore")
                                 from_ = msg.get("From", "Unknown")
                                 
-                                fb_code = detect_facebook_otp(subject, clean_html_tags(raw_html))
-                                if fb_code: 
+                                otp_code = detect_universal_otp(subject, clean_html_tags(raw_html))
+                                if otp_code: 
+                                    srv_name = get_service_name(from_, subject)
                                     cached_emails.append((subject, from_, raw_html))
-                                    response_text += f"🔹 **[📘 FACEBOOK OTP]** Code: `{fb_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                    response_text += f"🔹 **[{srv_name} OTP]** Code: `{otp_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                                     fb_found, otp_found = True, True
                                     break
                         if fb_found: break
-                    if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP found for this specific alias."
+                    if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Verification OTP found for this specific alias."
                 mail.logout()
             except imaplib.IMAP4.error: response_text = "❌ **IMAP Authentication Failed!** Check App Password / Provider."
 
         elif provider == 'hotmail':
-            url = "https://api-tools.yshshopmails.shop/api/v1/public/outlook/read_inbox"
+            url = "https://api-tools.yshshopmails.com/api/v1/public/outlook/read_inbox"
             try:
                 response = requests.post(url, json={"data": f"{email_address}|{password}|{refresh_token}|{client_id}"}, headers={'Content-Type': 'application/json'}, timeout=15)
-                if response.status_code == 200 and response.json().get("success"):
-                    emails = response.json().get("data", [])
+                resp_json = response.json()
+                
+                if response.status_code == 200 and resp_json.get("success"):
+                    emails = resp_json.get("data", [])
                     if not emails: response_text = f"📭 **Live Inbox ({email_address})** is empty."
                     else:
                         response_text = f"📨 **Live Inbox ({email_address}):**\n\n"
@@ -1512,14 +1568,18 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                             if msg_to and target_eml_lower not in msg_to: continue
                             raw_body, subject, from_sender = msg.get("message", "No Content"), msg.get("subject", "No Subject"), msg.get("from", "Outlook System")
                             
-                            fb_code = detect_facebook_otp(subject, clean_html_tags(raw_body))
-                            if fb_code:
+                            otp_code = detect_universal_otp(subject, clean_html_tags(raw_body))
+                            if otp_code:
+                                srv_name = get_service_name(from_sender, subject)
                                 cached_emails.append((subject, from_sender, raw_body))
-                                response_text += f"🔹 **[📘 FACEBOOK OTP]** Code: `{fb_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
+                                response_text += f"🔹 **[{srv_name} OTP]** Code: `{otp_code}`\n📌 **Subject:** {subject}\n━━━━━━━━━━━━━━━━━━━\n"
                                 fb_found, otp_found = True, True
                                 break
-                        if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Facebook OTP matched."
-                else: response_text = "❌ **Outlook Server Error:** Gateway unavailable."
+                        if not fb_found: response_text = f"📭 **Live Inbox ({email_address})**\nNo Verification OTP matched."
+                else: 
+                    err_msg = resp_json.get("error", "Unknown Server Error") if isinstance(resp_json, dict) else "Unknown Server Error"
+                    response_text = f"⚠️ **Outlook Sync Failed:** `{err_msg}`\n\n*Your session might be expired. Click Renew Token below.*"
+                    needs_renewal = True
             except: response_text = "❌ **Outlook API Timeout:** Server took too long to respond."
 
         if otp_found:
@@ -1544,7 +1604,7 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
                 conn.commit()
 
         response_text += f"\n🕒 *Server Sync Time:* {datetime.now().strftime('%I:%M:%S %p')}"
-        markup = _create_markup(bool(cached_emails), bool(bulk_email_to_delete))
+        markup = _create_markup(bool(cached_emails), bool(bulk_email_to_delete), needs_renewal)
 
         if edit_message_id:
             try: bot.edit_message_text(chat_id=chat_id, message_id=edit_message_id, text=response_text, parse_mode="Markdown", reply_markup=markup)
