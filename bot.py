@@ -271,25 +271,25 @@ def get_service_name(sender, subject):
 def detect_universal_otp(sender, subject, content):
     sender_str = str(sender).lower()
     subject_str = str(subject).lower()
-    combined_text = subject_str + " " + str(content).lower()
+    content_str = str(content).lower()
 
-    # 1. Negative Keywords: পাসওয়ার্ড চেঞ্জ বা লগইন অ্যালার্ট সরাসরি স্কিপ করবে
+    # 1. Negative Keywords: ফালতু নোটিফিকেশনগুলো স্কিপ করবে
     ignore_phrases = [
         'login alert', 'unusual login', 'nouvel appareil', 
         'connecter près', 'security alert', 'alerte de sécurité', 
         'was this you', "c'est bien vous", "venez-vous de vous connecter",
         'password changed', 'mot de passe', 'a été changé', 'reset your password',
-        'réinitialiser', 'compte suspendu', 'account suspended'
+        'réinitialiser', 'compte suspendu', 'account suspended',
+        'welcome to', 'action needed'  # <--- Added welcome and action needed 
     ]
     if any(phrase in subject_str for phrase in ignore_phrases):
         return None 
 
-    # ইনস্টাগ্রামকেও ফেসবুক/মেটা এর রুলে ফেলে দেওয়া হলো
     is_facebook = any(brand in sender_str or brand in subject_str for brand in ['facebook', 'meta', 'instagram', 'ig'])
 
     def is_valid_code(c):
         c_len = len(c)
-        # ফেসবুক বা ইনস্টাগ্রামের ক্ষেত্রে 1601 বা 4 ডিজিট বাতিল। শুধু 5, 6 বা 8 ডিজিট রিসিভ করবে।
+        # ফেসবুক বা ইনস্টাগ্রামের ক্ষেত্রে শুধু 5, 6 বা 8 ডিজিট রিসিভ করবে।
         if is_facebook and c_len not in [5, 6, 8]: 
             return False
         # অন্যান্য সাইটের ক্ষেত্রে সাল বা 1601 অ্যাড্রেস বাতিল
@@ -298,19 +298,25 @@ def detect_universal_otp(sender, subject, content):
                 return False
         return True
 
-    # 2. Strict Keyword Search (Code, OTP, PIN etc.)
-    matches = re.findall(r'(?:code|otp|pin|verification|passcode)\s*[:\-\=]?\s*([a-z0-9]{4,8})\b', combined_text)
-    for m in matches:
-        if is_valid_code(m):
-            return m.upper()
+    def find_code(text):
+        # Strict Keyword Search
+        matches = re.findall(r'(?:code|otp|pin|verification|passcode)\s*[:\-\=]?\s*([a-z0-9]{4,8})\b', text)
+        for m in matches:
+            if is_valid_code(m): return m.upper()
+        
+        # Isolated Numbers Search
+        numbers = re.findall(r'\b(\d{4,8})\b', text)
+        for num in numbers:
+            if is_valid_code(num): return num
+        return None
 
-    # 3. Fallback: Isolated Numbers Search
-    numbers = re.findall(r'\b(\d{4,8})\b', combined_text)
-    for num in numbers:
-        if is_valid_code(num):
-            return num
+    # 2. SUBJECT-FIRST PRIORITY: সবার আগে শুধু সাবজেক্ট স্ক্যান করবে
+    code_from_subject = find_code(subject_str)
+    if code_from_subject:
+        return code_from_subject
 
-    return None
+    # 3. Fallback: যদি সাবজেক্টে কোনো কোড না থাকে, শুধুমাত্র তখনই বডি (Content) স্ক্যান করবে
+    return find_code(content_str)
 
 def get_service_stock(api_key, service_name):
     try:
