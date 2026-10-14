@@ -1,3 +1,11 @@
+import sys
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except Exception: pass
+
 import telebot
 from telebot import types
 import imaplib
@@ -35,8 +43,27 @@ MAINTENANCE_MSG = "🛠️ **Bot is under Maintenance!**\n\nThe Admin is current
 # 🐘 SUPABASE POSTGRESQL DATABASE URL
 DATABASE_URL = "postgresql://postgres.cvqaqgqzlgbrlntvvlfn:WQsa9069%23%2A6T9@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
+class DBConnectionWrapper:
+    """Wrapper that ensures psycopg2 connections are closed after 'with' blocks."""
+    def __init__(self, url):
+        self._conn = psycopg2.connect(url, connect_timeout=15)
+    def __enter__(self):
+        return self._conn
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            try: self._conn.rollback()
+            except Exception: pass
+        else:
+            try: self._conn.commit()
+            except Exception: pass
+        try: self._conn.close()
+        except Exception: pass
+        return False
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return DBConnectionWrapper(DATABASE_URL)
 
 # ==========================================
 # 🧹 STRICT UI TRACKER
@@ -1693,18 +1720,29 @@ def fetch_and_send_emails(chat_id, edit_message_id=None, bulk_email_to_delete=No
 # 🚀 MAIN EXECUTION
 # ==========================================
 def start_bot():
-    while type(True) is bool:
+    while True:
         try:
             bot.remove_webhook()
             bot.infinity_polling(skip_pending=True, interval=1, timeout=20)
         except Exception as e:
-            logging.error(f"Polling crashed: {e}. Restarting in 5 seconds...")
-            time.sleep(5)
+            if "Conflict: terminated by other getUpdates" in str(e):
+                logging.warning("⚠️ Telegram Conflict (409): Another bot instance is currently active with this token. Waiting 10s before retry...")
+                time.sleep(10)
+            else:
+                logging.error(f"Polling crashed: {e}. Restarting in 5 seconds...")
+                time.sleep(5)
+
+def run_flask():
+    port = int(os.environ.get('PORT', 5000))
+    logging.info(f"🌐 Starting Flask server on port {port}...")
+    try:
+        app.run(host="0.0.0.0", port=port, use_reloader=False)
+    except Exception as e:
+        logging.error(f"Flask server error: {e}")
 
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=auto_cleaner, daemon=True).start()
     threading.Thread(target=gmail_stock_tracker, daemon=True).start()
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
+    threading.Thread(target=run_flask, daemon=True).start()
+    start_bot()
